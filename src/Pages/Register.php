@@ -5,16 +5,22 @@ namespace Isapp\FilamentFirebaseAuth\Pages;
 use Filament\Auth\Pages\Register as FilamentRegister;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Field;
+use Filament\Notifications\Notification;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rules\Unique;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Validation\ValidationRuleParser;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\CreateFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\DeleteFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\LinkFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
 use Kreait\Firebase\Auth\UserRecord;
 use Kreait\Firebase\Exception\Auth\EmailExists;
+use Kreait\Firebase\Exception\Auth\WeakPassword;
+use Kreait\Firebase\Exception\FirebaseException;
 use SensitiveParameter;
 use Throwable;
 
@@ -40,7 +46,7 @@ class Register extends FilamentRegister
      *
      * @param  array<string, mixed>  $data
      *
-     * @throws ValidationException when the email already has a Firebase account.
+     * @throws ValidationException when Firebase refuses to create the account.
      */
     protected function handleRegistration(#[SensitiveParameter] array $data): Model
     {
@@ -58,8 +64,10 @@ class Register extends FilamentRegister
             throw $exception;
         }
 
-        // Filament's page transaction runs on the default connection. Without an open transaction,
-        // Laravel ignores this callback, and the committed record keeps its Firebase account.
+        // Laravel attaches this callback to the last open transaction, on any connection. Here that is
+        // Filament's page transaction (or an outer host transaction), because the transaction of the
+        // local step has already committed. Without an open transaction, Laravel ignores the callback,
+        // and the committed record keeps its Firebase account.
         DB::afterRollBack(fn () => $this->deleteFirebaseUser($firebaseUser->uid));
 
         return $user;
@@ -70,26 +78,63 @@ class Register extends FilamentRegister
      *
      * An email that already has a Firebase account gets the same error as a local duplicate.
      * So the page never tells whether an email has an account in a shared Firebase project.
+     * A weak password gets a form error. Any other Firebase error gets a generic notification,
+     * and the plugin logs only the exception class.
      */
     protected function createFirebaseUser(string $email, #[SensitiveParameter] string $password, ?string $name): UserRecord
     {
         try {
             return app(CreateFirebaseUser::class)->handle($email, $password, $name, verified: false);
         } catch (EmailExists) {
+            throw ValidationException::withMessages($this->getEmailUniqueError());
+        } catch (WeakPassword) {
             throw ValidationException::withMessages([
-                'data.email' => __('validation.unique', ['attribute' => $this->getEmailValidationAttribute()]),
+                'data.password' => __('filament-firebase-auth::register.weak_password'),
             ]);
+        } catch (FirebaseException $exception) {
+            logger()->error('The plugin could not create the Firebase account of a registration.', [
+                'exception' => $exception::class,
+            ]);
+
+            Notification::make()
+                ->title(__('filament-firebase-auth::register.failed'))
+                ->danger()
+                ->send();
+
+            throw ValidationException::withMessages([]);
         }
     }
 
     /**
-     * Returns the attribute name that Filament's validator puts into the `unique` message of the email field.
+     * Builds the error of Filament's `unique` rule on the email field through Laravel's validator.
+     * So the custom messages and attributes of the form and the `validation.custom` lines apply.
+     *
+     * @return array<string, string>
      */
-    protected function getEmailValidationAttribute(): string
+    protected function getEmailUniqueError(): array
     {
         $field = $this->form->getFlatFields(withHidden: true)['email'] ?? null;
+        $statePath = $field instanceof Field ? $field->getStatePath() : 'data.email';
+        $parameters = [];
 
-        return $field instanceof Field ? $field->getValidationAttribute() : 'email';
+        foreach ($field instanceof Field ? $field->getValidationRules() : [] as $rule) {
+            if ($rule instanceof Unique) {
+                [, $parameters] = ValidationRuleParser::parse((string) $rule);
+
+                break;
+            }
+        }
+
+        $validator = Validator::make(
+            ['data' => ['email' => data_get($this->data, 'email')]],
+            [],
+            $this->form->getValidationMessages(),
+            $this->form->getValidationAttributes(),
+        );
+
+        $validator->addFailure($statePath, 'unique', $parameters);
+
+        return [$statePath => (string) $validator->errors()->first($statePath)];
     }
 
     /**

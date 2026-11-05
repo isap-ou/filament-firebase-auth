@@ -14,11 +14,14 @@ use Isapp\FilamentFirebaseAuth\Exceptions\FirebaseIdentityNotLinkable;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Pages\Register;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
+use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Pages\CustomUniqueMessageRegister;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Pages\FailingAfterRegister;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Pages\TransactionalRegister;
 use Kreait\Firebase\Auth\UserRecord;
 use Kreait\Firebase\Exception\Auth\ApiConnectionFailed;
 use Kreait\Firebase\Exception\Auth\EmailExists;
+use Kreait\Firebase\Exception\Auth\OperationNotAllowed;
+use Kreait\Firebase\Exception\Auth\WeakPassword;
 use Livewire\Features\SupportTesting\Testable;
 
 use function Pest\Livewire\livewire;
@@ -140,6 +143,61 @@ it('shows a firebase-only account as a local duplicate', function () {
     expect(User::query()->count())->toBe(1)
         ->and(auth('app')->check())->toBeFalse();
 });
+
+it('shows the host unique message for a firebase-only account', function (string $page, ?string $customLine, string $expected) {
+    if ($customLine !== null) {
+        app('translator')->addLines(['validation.custom.data.email.unique' => $customLine], 'en');
+    }
+
+    User::query()->create(['name' => 'Taken', 'email' => 'taken@example.com']);
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('createUser')->once()->andThrow(new EmailExists('EMAIL_EXISTS'));
+
+    $localMessage = submitRegistration('taken@example.com', page: $page)->errors()->first('data.email');
+
+    expect($localMessage)->toBe($expected);
+
+    submitRegistration(page: $page)->assertHasFormErrors(['email' => $localMessage]);
+})->with([
+    'field message' => [CustomUniqueMessageRegister::class, null, 'The host says email address is taken.'],
+    'custom translation line' => [Register::class, 'This :attribute is in use.', 'This email address is in use.'],
+]);
+
+it('shows a form error for a password that firebase finds weak', function () {
+    $log = Log::spy();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('createUser')->once()->andThrow(new WeakPassword('WEAK_PASSWORD'));
+    $firebase->shouldNotReceive('deleteUser');
+
+    submitRegistration()->assertHasFormErrors(['password' => __('filament-firebase-auth::register.weak_password')]);
+
+    $log->shouldNotHaveReceived('error');
+    expect(User::query()->count())->toBe(0)
+        ->and(auth('app')->check())->toBeFalse();
+});
+
+it('fails closed when firebase cannot create the account', function (Throwable $exception) {
+    $log = Log::spy();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('createUser')->once()->andThrow($exception);
+    $firebase->shouldNotReceive('deleteUser');
+
+    submitRegistration()
+        ->assertHasNoFormErrors()
+        ->assertNotified(__('filament-firebase-auth::register.failed'))
+        ->assertNoRedirect();
+
+    $log->shouldHaveReceived('error')->once()->withArgs(
+        fn (string $message, array $context): bool => $context === ['exception' => $exception::class]
+            && ! str_contains($message . json_encode($context), 'new@example.com')
+            && ! str_contains($message . json_encode($context), 'Secret123!'),
+    );
+    expect(User::query()->count())->toBe(0)
+        ->and(auth('app')->check())->toBeFalse();
+})->with([
+    'firebase is unreachable' => [fn (): Throwable => new ApiConnectionFailed('Firebase is down')],
+    'any other firebase error' => [fn (): Throwable => new OperationNotAllowed('OPERATION_NOT_ALLOWED')],
+]);
 
 it('deletes the firebase account once when the page transaction rolls back later', function () {
     $firebase = mockFirebase();

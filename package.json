@@ -1,0 +1,12 @@
+{
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "node bin/build.js",
+        "dev": "node bin/build.js --dev"
+    },
+    "devDependencies": {
+        "esbuild": "^0.28",
+        "firebase": "^13.2"
+    }
+}

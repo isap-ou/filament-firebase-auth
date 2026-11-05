@@ -2,8 +2,11 @@
 
 namespace Isapp\FilamentFirebaseAuth;
 
+use Filament\Support\Assets\Js;
+use Filament\Support\Facades\FilamentAsset;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Auth;
+use InvalidArgumentException;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\CheckFirebasePassword;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUserByEmail;
@@ -12,8 +15,10 @@ use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\SyncLocalUser;
 use Isapp\FilamentFirebaseAuth\Auth\FirebaseUserProvider;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
 use Isapp\FilamentFirebaseAuth\Contracts\DecidesAccountDeletion;
+use Isapp\FilamentFirebaseAuth\Contracts\SocialSignInMethod;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Isapp\FilamentFirebaseAuth\Deletion\AccountDeletionPolicy;
+use Isapp\FilamentFirebaseAuth\SocialSignIn\JsSdkSignIn;
 use Spatie\LaravelPackageTools\Commands\InstallCommand;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
@@ -42,6 +47,7 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
     public function packageBooted(): void
     {
         $this->registerUserProvider();
+        $this->registerSocialSignIn();
     }
 
     /**
@@ -69,5 +75,29 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
             $app->make('hash'),
             $config['model'],
         ));
+    }
+
+    /**
+     * Registers the JS bundle of the social buttons. It loads only on a page that shows the buttons.
+     * Binds the social sign-in method that the config key `social_sign_in` selects.
+     * A host app can bind its own class to the contract.
+     */
+    private function registerSocialSignIn(): void
+    {
+        FilamentAsset::register([
+            Js::make('filament-firebase-auth', __DIR__ . '/../resources/dist/filament-firebase-auth.js')->loadedOnRequest(),
+        ], 'isapp/filament-firebase-auth');
+
+        $this->app->bindIf(SocialSignInMethod::class, function (Application $app): SocialSignInMethod {
+            $method = $app->make('config')->get('filament-firebase-auth.social_sign_in');
+
+            if ($method !== 'js_sdk') {
+                $name = is_string($method) ? $method : get_debug_type($method);
+
+                throw new InvalidArgumentException("The social sign-in method [{$name}] is not supported. Use \"js_sdk\".");
+            }
+
+            return $app->make(JsSdkSignIn::class);
+        });
     }
 }

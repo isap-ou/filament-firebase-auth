@@ -6,7 +6,13 @@ use Closure;
 use Filament\Contracts\Plugin;
 use Filament\Panel;
 use Filament\Support\Concerns\EvaluatesClosures;
+use Filament\View\PanelsRenderHook;
+use Illuminate\Contracts\Support\Htmlable;
+use Illuminate\Support\Facades\Route;
 use Isapp\FilamentFirebaseAuth\Actions\Panels\EnsurePanelUsesFirebasePages;
+use Isapp\FilamentFirebaseAuth\Contracts\SocialSignInMethod;
+use Isapp\FilamentFirebaseAuth\Enums\SocialProvider;
+use Isapp\FilamentFirebaseAuth\Http\Controllers\FirebaseSignInController;
 
 /**
  * The per-panel settings of the plugin.
@@ -18,9 +24,23 @@ class FilamentFirebaseAuthPlugin implements Plugin
     protected bool | Closure $createOnSignIn = true;
 
     /**
-     * @var list<string>
+     * @var list<SocialProvider>
      */
     protected array $providers = [];
+
+    /**
+     * OAuth scopes by Firebase provider ID.
+     *
+     * @var array<string, list<string>>
+     */
+    protected array $providerScopes = [];
+
+    /**
+     * Custom OAuth parameters by Firebase provider ID.
+     *
+     * @var array<string, array<string, string>>
+     */
+    protected array $providerParameters = [];
 
     /**
      * Filament's plugin docs use a static `make()`. The `Plugin` contract does not require it.
@@ -35,7 +55,10 @@ class FilamentFirebaseAuthPlugin implements Plugin
         return 'filament-firebase-auth';
     }
 
-    public function register(Panel $panel): void {}
+    public function register(Panel $panel): void
+    {
+        $this->registerSocialSignIn($panel);
+    }
 
     /**
      * Filament calls this method on the first request of the panel.
@@ -63,13 +86,40 @@ class FilamentFirebaseAuthPlugin implements Plugin
     }
 
     /**
-     * The Firebase provider IDs that get a button on the login page, for example `google.com`.
+     * The social providers that get a button on the login and registration pages, in this order.
      *
-     * @param  array<string>  $providerIds
+     * @param  array<SocialProvider>  $providers
      */
-    public function providers(array $providerIds): static
+    public function providers(array $providers): static
     {
-        $this->providers = array_values($providerIds);
+        $unique = [];
+
+        // The typed closure rejects a value that is not a `SocialProvider`, for example a provider ID string.
+        foreach (array_map(fn (SocialProvider $provider): SocialProvider => $provider, $providers) as $provider) {
+            $unique[$provider->value] = $provider;
+        }
+
+        $this->providers = array_values($unique);
+
+        return $this;
+    }
+
+    /**
+     * @return list<SocialProvider>
+     */
+    public function getProviders(): array
+    {
+        return $this->providers;
+    }
+
+    /**
+     * The OAuth scopes that the provider asks for, for example `mail.read` for Microsoft.
+     *
+     * @param  array<string>  $scopes
+     */
+    public function providerScopes(SocialProvider $provider, array $scopes): static
+    {
+        $this->providerScopes[$provider->value] = array_values($scopes);
 
         return $this;
     }
@@ -77,8 +127,48 @@ class FilamentFirebaseAuthPlugin implements Plugin
     /**
      * @return list<string>
      */
-    public function getProviders(): array
+    public function getProviderScopes(SocialProvider $provider): array
     {
-        return $this->providers;
+        return $this->providerScopes[$provider->value] ?? [];
+    }
+
+    /**
+     * Custom OAuth parameters for the provider, for example `['tenant' => '...']` for Microsoft.
+     *
+     * @param  array<string, string>  $parameters
+     */
+    public function providerParameters(SocialProvider $provider, array $parameters): static
+    {
+        $this->providerParameters[$provider->value] = $parameters;
+
+        return $this;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function getProviderParameters(SocialProvider $provider): array
+    {
+        return $this->providerParameters[$provider->value] ?? [];
+    }
+
+    /**
+     * Adds the sign-in route to the panel route group, so it has the panel middleware.
+     * Adds the buttons to Filament's own login and registration pages when the panel has providers.
+     */
+    private function registerSocialSignIn(Panel $panel): void
+    {
+        $panel->routes(fn () => Route::post('firebase/sign-in', FirebaseSignInController::class)
+            ->middleware('throttle:5,1')
+            ->name('firebase.sign-in'));
+
+        if ($this->getProviders() === []) {
+            return;
+        }
+
+        $buttons = fn (): Htmlable => app(SocialSignInMethod::class)->renderButtons($panel, $this->getProviders());
+
+        $panel->renderHook(PanelsRenderHook::AUTH_LOGIN_FORM_AFTER, $buttons);
+        $panel->renderHook(PanelsRenderHook::AUTH_REGISTER_FORM_AFTER, $buttons);
     }
 }

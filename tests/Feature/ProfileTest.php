@@ -120,6 +120,12 @@ function profileRequestEmailChange(User $user, string $newEmail): string
     return (string) $url;
 }
 
+// The background session check calls Firebase after a panel request. These tests mock Firebase strictly,
+// so they turn the check off. SessionRevalidationTest covers the check.
+beforeEach(function () {
+    config()->set('filament-firebase-auth.revalidate_every', 0);
+});
+
 it('checks the current password with firebase', function () {
     $user = linkedUser();
     $firebase = profileFirebase();

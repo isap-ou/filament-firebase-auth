@@ -8,12 +8,14 @@ use Filament\Notifications\Notification;
 use Illuminate\Auth\Passwords\PasswordBroker;
 use Illuminate\Contracts\Auth\PasswordBrokerFactory;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification as Notifications;
 use Illuminate\Support\Facades\Password;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Passwords\FirebasePasswordBroker;
 use Isapp\FilamentFirebaseAuth\Passwords\FirebasePasswordBrokerManager;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
+use Kreait\Firebase\Exception\Auth\ApiConnectionFailed;
 use Kreait\Firebase\Exception\Auth\UserNotFound;
 use Livewire\Features\SupportTesting\Testable;
 
@@ -118,6 +120,39 @@ it('does not reveal unknown emails', function () {
     expect(resetTokenCount())->toBe(0);
 });
 
+it('does not reveal the token throttle', function () {
+    Notifications::fake();
+    $user = linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord());
+
+    requestResetLink()->assertNotified(resetLinkSentNotification());
+
+    requestResetLink()
+        ->assertNotified(resetLinkSentNotification())
+        ->assertNotNotified(__(Password::RESET_THROTTLED));
+
+    Notifications::assertSentToTimes($user, ResetPasswordNotification::class, 1);
+    expect(resetTokenCount())->toBe(1);
+});
+
+it('shows the sent message and logs the class only when firebase fails during the request', function () {
+    Notifications::fake();
+    $log = Log::spy();
+    linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andThrow(new ApiConnectionFailed('Firebase is down for jane@example.com'));
+
+    requestResetLink()->assertNotified(resetLinkSentNotification());
+
+    $log->shouldHaveReceived('error')->once()->withArgs(
+        fn (string $message, array $context): bool => $context === ['exception' => ApiConnectionFailed::class]
+            && ! str_contains($message . json_encode($context), 'jane@example.com'),
+    );
+    Notifications::assertNothingSent();
+    expect(resetTokenCount())->toBe(0);
+});
+
 it('does not reveal a firebase account without a local record', function () {
     Notifications::fake();
     $firebase = mockFirebase();
@@ -210,6 +245,28 @@ it('links an unlinked record after a reset', function () {
         ->and($user->refresh()->hasVerifiedEmail())->toBeTrue()
         ->and(FirebaseIdentity::query()->count())->toBe(1)
         ->and(resetTokenCount())->toBe(0);
+});
+
+it('shows the failure message and keeps the token when firebase fails during the reset', function () {
+    $log = Log::spy();
+    $user = linkedUser(verified: false);
+    $token = createResetToken($user);
+
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord(['emailVerified' => false]));
+    $firebase->shouldReceive('updateUser')->andReturn(userRecord());
+    $firebase->shouldReceive('changeUserPassword')->andThrow(new ApiConnectionFailed('Firebase is down'));
+
+    submitNewPassword($token, 'p4ss-W0rd-123')
+        ->assertNotified(__(Password::INVALID_USER))
+        ->assertNoRedirect();
+
+    $log->shouldHaveReceived('error')->once()->withArgs(
+        fn (string $message, array $context): bool => $context === ['exception' => ApiConnectionFailed::class]
+            && ! str_contains($message . json_encode($context), 'p4ss-W0rd-123')
+            && ! str_contains($message . json_encode($context), 'jane@example.com'),
+    );
+    expect(resetTokenCount())->toBe(1);
 });
 
 it('changes nothing in firebase for a wrong token', function () {

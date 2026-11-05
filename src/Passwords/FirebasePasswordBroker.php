@@ -20,6 +20,8 @@ use Isapp\FilamentFirebaseAuth\Actions\Identity\LinkFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Exceptions\FirebaseIdentityNotLinkable;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Kreait\Firebase\Auth\UserRecord;
+use Kreait\Firebase\Exception\FirebaseException;
+use Psr\Log\LoggerInterface;
 use SensitiveParameter;
 use UnexpectedValueException;
 
@@ -52,17 +54,27 @@ class FirebasePasswordBroker extends PasswordBroker
     }
 
     /**
-     * Filament's page shows an error for `INVALID_USER` and a "sent" message for `RESET_LINK_SENT`.
-     * An unknown email gets the "sent" message too, so that nobody can find out which emails exist.
+     * Filament's page shows an error for `INVALID_USER` and `RESET_THROTTLED`, and a "sent" message
+     * for `RESET_LINK_SENT`. Laravel returns `RESET_THROTTLED` only for an email that has a record.
+     * So both statuses become `RESET_LINK_SENT`, and nobody can find out which emails exist.
+     * A throttled request still sends no second email.
+     *
+     * When Firebase fails, the broker logs the exception class and the page shows the same message.
      *
      * @param  array<string, mixed>  $credentials
      * @return string
      */
     public function sendResetLink(#[SensitiveParameter] array $credentials, ?Closure $callback = null)
     {
-        $status = parent::sendResetLink($credentials, $callback);
+        try {
+            $status = parent::sendResetLink($credentials, $callback);
+        } catch (FirebaseException $exception) {
+            $this->logFirebaseFailure($exception);
 
-        return $status === static::INVALID_USER ? static::RESET_LINK_SENT : $status;
+            return static::RESET_LINK_SENT;
+        }
+
+        return in_array($status, [static::INVALID_USER, static::RESET_THROTTLED], true) ? static::RESET_LINK_SENT : $status;
     }
 
     /**
@@ -70,13 +82,29 @@ class FirebasePasswordBroker extends PasswordBroker
      * because the reset proves that the person owns the email. Then it links the record and copies
      * the Firebase state to the link. Then it calls the callback and deletes the token.
      *
-     * The token is deleted last. When a Firebase call fails, the exception goes to the caller
-     * and the same link works again.
+     * The token is deleted last. When a Firebase call fails, the broker logs the exception class,
+     * returns `INVALID_USER` (Filament's normal failure message), and the same link works again.
      *
      * @param  array<string, mixed>  $credentials
      * @return string
      */
     public function reset(#[SensitiveParameter] array $credentials, Closure $callback)
+    {
+        try {
+            return $this->resetInTimebox($credentials, $callback);
+        } catch (FirebaseException $exception) {
+            $this->logFirebaseFailure($exception);
+
+            return static::INVALID_USER;
+        }
+    }
+
+    /**
+     * The flow of Laravel's `reset()` in the same timebox, with the Firebase steps before the callback.
+     *
+     * @param  array<string, mixed>  $credentials
+     */
+    protected function resetInTimebox(#[SensitiveParameter] array $credentials, Closure $callback): string
     {
         return $this->timebox->call(function (Timebox $timebox) use ($credentials, $callback): string {
             $found = $this->find($credentials);
@@ -224,5 +252,16 @@ class FirebasePasswordBroker extends PasswordBroker
         $changed = app(ChangeFirebasePassword::class)->handle($firebaseUser->uid, $password);
 
         app(LinkFirebaseIdentity::class)->handle($user, $changed);
+    }
+
+    /**
+     * Logs the exception class only. A Firebase message can contain the email or the request URL
+     * with the API key.
+     */
+    protected function logFirebaseFailure(FirebaseException $exception): void
+    {
+        app(LoggerInterface::class)->error('Firebase failed during a password reset.', [
+            'exception' => $exception::class,
+        ]);
     }
 }

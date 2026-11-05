@@ -6,7 +6,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Model;
-use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\FetchFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\RefreshFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
@@ -20,6 +20,10 @@ use Psr\Log\LoggerInterface;
  * The job runs outside a panel request. It finds the record through the link, not through a panel.
  * A changed link changes the session fingerprint (`HasFirebaseIdentity::getAuthPassword()`).
  * Laravel's `AuthenticateSession` then logs the session out on its next request.
+ *
+ * Without a queue, the job runs in the request process after the response. The scoped
+ * `FindFirebaseUser` can then hold the record from before a change in that request.
+ * The job therefore reads Firebase with `FetchFirebaseUser`, which never remembers a record.
  */
 class SyncFirebaseIdentity implements ShouldQueue
 {
@@ -27,7 +31,7 @@ class SyncFirebaseIdentity implements ShouldQueue
 
     public function __construct(public readonly int | string $identityId) {}
 
-    public function handle(FindFirebaseUser $find, SyncsLocalUsers $sync, RefreshFirebaseIdentity $refresh): void
+    public function handle(FetchFirebaseUser $fetch, SyncsLocalUsers $sync, RefreshFirebaseIdentity $refresh): void
     {
         $identity = FirebaseIdentity::query()->find($this->identityId);
 
@@ -36,7 +40,7 @@ class SyncFirebaseIdentity implements ShouldQueue
         }
 
         try {
-            $firebaseUser = $find->handle($identity->firebase_uid);
+            $firebaseUser = $fetch->handle($identity->firebase_uid);
         } catch (FirebaseException $exception) {
             $this->logFirebaseFailure($identity, $exception);
 

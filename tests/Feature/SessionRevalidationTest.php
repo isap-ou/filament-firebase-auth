@@ -130,7 +130,9 @@ it('clears the mark when the firebase account is enabled again', function () {
 
 it('logs the user out on the next request after a change', function () {
     // No fake: the middleware dispatches the job, and the job runs after the response.
-    mockFirebase()->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord(['disabled' => true]));
+    // The test app keeps the terminating callbacks of earlier requests. The job of the first request
+    // therefore runs again after the second request, and it reads Firebase again each time.
+    mockFirebase()->shouldReceive('getUser')->twice()->with('uid-1')->andReturn(userRecord(['disabled' => true]));
     $user = linkedUser();
     sessionCheckGuard()->login($user);
 

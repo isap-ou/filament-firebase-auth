@@ -165,6 +165,31 @@ it('signs in with a verified id token', function () {
         ->and(FirebaseIdentity::query()->where('firebase_uid', 'uid-1')->count())->toBe(1);
 });
 
+it('ends older sessions when a social sign-in proves the email', function () {
+    // Someone created the account with this email and a password, then the owner signs in with Google.
+    // Firebase drops the unproven password provider and marks the email verified. The UID stays.
+    // Firebase keeps `validSince`, so only the plugin can end the older sessions.
+    $validSince = now()->subDay()->startOfSecond();
+    $user = linkedUser(verified: false);
+    $user->firebaseIdentity?->update(['tokens_valid_after' => $validSince]);
+    $olderFingerprint = $user->refresh()->getAuthPassword();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->with('token-1', true)->andReturn(socialSignInToken('uid-1'));
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord([
+        'validSince' => (string) $validSince->getTimestamp(),
+        'providerUserInfo' => [['providerId' => 'google.com', 'rawId' => 'g-1', 'email' => 'jane@example.com']],
+    ]));
+
+    postJson('/app/firebase/sign-in', ['credential' => 'token-1'])->assertOk();
+
+    expect($user->refresh()->getAuthPassword())->not->toBe($olderFingerprint)
+        ->and(auth('app')->id())->toBe($user->getKey());
+
+    // The current sign-in stored the new fingerprint, so it stays on the next request.
+    app('auth')->forgetGuards();
+    get('/app')->assertOk();
+});
+
 it('redirects to the intended url', function () {
     $firebase = mockFirebase();
     $firebase->shouldReceive('verifyIdToken')->andReturn(socialSignInToken('uid-1'));

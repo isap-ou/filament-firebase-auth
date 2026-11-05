@@ -60,7 +60,8 @@ One row links one local record to one Firebase user. Model: `Isapp\FilamentFireb
 | `synced_at` | The last copy from Firebase. |
 | `tokens_valid_after` | Firebase `tokensValidAfterTime`. Part of the session fingerprint. |
 | `invalidated_at` | Set when Firebase disables or deletes the user. Part of the session fingerprint. |
-| `session_salt` | Rotated by "Log out other sessions". Part of the session fingerprint. |
+| `session_salt` | Rotated by "Log out other sessions", and when the email becomes verified or the password provider disappears. Part of the session fingerprint. |
+| `has_password_provider` | The last known state of the Firebase `password` provider. Null until the first copy. |
 
 ```php
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;

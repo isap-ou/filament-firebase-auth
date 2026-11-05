@@ -51,7 +51,8 @@ The plugin does not change your tables. It adds one polymorphic link table, `fir
 | `synced_at` | The last time the plugin read the Firebase user. |
 | `tokens_valid_after` | The local copy of the Firebase "tokens valid after" time. Firebase revokes tokens before this time. |
 | `invalidated_at` | Set when the Firebase account is missing or disabled. |
-| `session_salt` | A random value. A new value logs out the other sessions of the record. |
+| `session_salt` | A random value. A new value logs out the other sessions of the record. The plugin writes a new value when the email becomes verified or when the Firebase user loses the `password` provider. |
+| `has_password_provider` | The last known state of the Firebase `password` provider. Null until the plugin first reads the providers. |
 
 Two unique indexes apply: `(authenticatable_type, firebase_uid)` and `(authenticatable_type, authenticatable_id)`. The result:
 

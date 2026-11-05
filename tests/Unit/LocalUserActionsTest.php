@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Database\QueryException;
+use Isapp\FilamentFirebaseAuth\Actions\Identity\RefreshFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\CreateLocalUser;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\SyncLocalUser;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
@@ -117,6 +118,40 @@ it('does not raise the verified flag when the record save fails', function () {
     ])))->toThrow(QueryException::class);
 
     expect($user->firebaseIdentity?->fresh()?->email_verified_at)->toBeNull();
+});
+
+it('rotates the session salt when the email becomes verified', function () {
+    // Older sessions may belong to a person who created the account before the owner proved the email.
+    $user = linkedUser(verified: false);
+    $fingerprint = $user->getAuthPassword();
+
+    app(RefreshFirebaseIdentity::class)->handle($user->firebaseIdentity, userRecord(['emailVerified' => true]));
+
+    expect($user->refresh()->firebaseIdentity?->session_salt)->not->toBeNull()
+        ->and($user->getAuthPassword())->not->toBe($fingerprint);
+});
+
+it('rotates the session salt when the password provider disappears', function () {
+    $user = linkedUser();
+    app(RefreshFirebaseIdentity::class)->handle($user->firebaseIdentity, userRecord());
+    $fingerprint = $user->refresh()->getAuthPassword();
+
+    app(RefreshFirebaseIdentity::class)->handle($user->firebaseIdentity, userRecord([
+        'providerUserInfo' => [['providerId' => 'google.com', 'rawId' => 'g-1', 'email' => 'jane@example.com']],
+    ]));
+
+    expect($user->refresh()->getAuthPassword())->not->toBe($fingerprint);
+});
+
+it('keeps the session salt while the verification and the password provider do not change', function () {
+    $user = linkedUser();
+    app(RefreshFirebaseIdentity::class)->handle($user->firebaseIdentity, userRecord());
+    $fingerprint = $user->refresh()->getAuthPassword();
+
+    app(RefreshFirebaseIdentity::class)->handle($user->firebaseIdentity, userRecord());
+    app(RefreshFirebaseIdentity::class)->handle($user->firebaseIdentity, userRecord(['emailVerified' => false]));
+
+    expect($user->refresh()->getAuthPassword())->toBe($fingerprint);
 });
 
 it('keeps other database errors as they are', function () {

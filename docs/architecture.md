@@ -148,6 +148,7 @@ The plugin asks the deletion policy in three cases (the `DeletionReason` enum):
 > [!WARNING]
 > `orphaned` deletes the Firebase account as soon as this app has no link to it.
 > If a mobile app or another web app shares the Firebase project, the person then loses access to those apps too.
+> A blocked sign-in on a closed panel deletes too: when a person with no link in this app signs in with the correct password or with a social provider such as Google (for example a user of your mobile app), `orphaned` deletes that person's Firebase account for all apps.
 > Use `orphaned` only when this app is the only user of the Firebase project.
 
 Other rules:
@@ -209,6 +210,8 @@ class CreateAdmin implements CreatesLocalUsers
         ]);
     }
 }
+
+// `create()` fills only the attributes in `$fillable`, so `role` must be fillable. Or use `forceCreate()`.
 
 // In a service provider:
 $this->app->bind(CreatesLocalUsers::class, CreateAdmin::class);

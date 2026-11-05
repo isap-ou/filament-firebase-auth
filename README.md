@@ -60,7 +60,7 @@ Read the [architecture guide](https://github.com/isap-ou/filament-firebase-auth/
 ## Requirements
 
 - PHP 8.3 or later
-- Laravel 12.4 or later, or Laravel 13
+- Laravel 12.69.3 or later, or Laravel 13.33 or later
 - Filament 5
 - A Firebase project with a service account
 - [`kreait/laravel-firebase`](https://github.com/kreait/laravel-firebase) 7.2 or later (Composer installs it with the plugin)
@@ -192,13 +192,13 @@ public function panel(Panel $panel): Panel
             AppAuthentication::make()->recoverable(),
         ])
         ->multiFactorAuthenticationRequiredMiddlewareName(EnsureMultiFactorAuthenticationIsEnabled::class)
+        // ->middleware([...]), ->authMiddleware([...]) and the rest as usual.
         ->plugin(
             FilamentFirebaseAuthPlugin::make()
                 ->createOnSignIn(false)
                 ->providers([SocialProvider::Google, SocialProvider::Microsoft])
                 ->providerParameters(SocialProvider::Microsoft, ['tenant' => 'your-tenant-id']),
         );
-        // ->middleware([...]), ->authMiddleware([...]) and the rest as usual.
 }
 ```
 
@@ -415,6 +415,7 @@ The `delete_accounts` config key decides what happens to the Firebase account:
 > **Do not use `orphaned` when other apps share the Firebase project.**
 > The plugin can see only its own links. It cannot know that a mobile app or another web app still uses the account.
 > With `orphaned`, the deletion of a record in this app deletes the Firebase account for every app, and the person loses access everywhere.
+> A blocked sign-in on a closed panel deletes too: when a person with no link in this app signs in with the correct password or with a social provider such as Google (for example a user of your mobile app), `orphaned` deletes that person's Firebase account for all apps.
 > Use `orphaned` only when this app is the only user of the Firebase project. Keep `never` in all other cases.
 
 More facts:
@@ -474,6 +475,8 @@ class CreateAdmin implements CreatesLocalUsers
     }
 }
 ```
+
+`create()` fills only the attributes in the `$fillable` list of the model, so add `role` there, or use `forceCreate()`.
 
 ```php
 // app/Providers/AppServiceProvider.php
@@ -568,29 +571,48 @@ Check the service account and the network.
 
 `kreait/firebase-php` sends its Auth calls to the [Firebase Auth Emulator](https://firebase.google.com/docs/emulator-suite/connect_auth) when `FIREBASE_AUTH_EMULATOR_HOST` is set.
 All server-side Firebase calls of the plugin go through it, so your feature tests need no real Firebase project.
-`kreait/firebase-php` still needs a project ID: give it a service account file, or set `GOOGLE_CLOUD_PROJECT`.
-A project ID that starts with `demo-` needs no credentials in the emulator.
+
+The emulator needs Node and Java 21 or later. Pin `firebase-tools` as a dev dependency of your app, so every machine runs the same version:
 
 ```bash
-GOOGLE_CLOUD_PROJECT=demo-your-app \
-npx firebase-tools emulators:exec --project demo-your-app --only auth "php artisan test"
+npm install --save-dev --save-exact firebase-tools
+npm ci
+npx --no-install firebase-tools emulators:exec --project demo-your-app --only auth "php artisan test"
 ```
 
-`emulators:exec` sets `FIREBASE_AUTH_EMULATOR_HOST` for the command.
+`emulators:exec` starts the emulator, sets `FIREBASE_AUTH_EMULATOR_HOST` for the command, and stops the emulator after it.
+A project ID that starts with `demo-` needs no real Firebase project.
+
+The emulator ignores credentials, but `kreait/firebase-php` still needs a project ID.
+Without credentials, it looks for Application Default Credentials: a slow probe of the cloud metadata server, or the real credentials of your machine.
+Give it placeholder service account credentials in the testing environment, as the plugin's own emulator tests do.
+The private key is never used.
+
+```php
+// For example in the setUp() of your emulator test case
+config()->set('firebase.projects.app.credentials', [
+    'type' => 'service_account',
+    'project_id' => 'demo-your-app',
+    'client_email' => 'emulator@demo-your-app.iam.gserviceaccount.com',
+    'private_key' => 'unused',
+]);
+```
+
 The social buttons in the browser do not connect to the emulator.
 
-The plugin's own tests mock Firebase. Read [CONTRIBUTING.md](https://github.com/isap-ou/filament-firebase-auth/blob/main/.github/CONTRIBUTING.md) to run them.
+The plugin's unit and feature tests mock Firebase. An `emulator` test group runs against the Firebase Auth Emulator (`composer test:emulator`).
+Read [CONTRIBUTING.md](https://github.com/isap-ou/filament-firebase-auth/blob/main/.github/CONTRIBUTING.md) to run them.
 
 ## Limitations
 
 - **No passkeys.** Firebase Authentication has no passkey sign-in yet.
-- **No Firebase multi-factor authentication.** Filament's own multi-factor authentication works. An account with a Firebase second factor (SMS or TOTP) enrolled cannot sign in with a password.
+- **No Firebase multi-factor authentication.** Filament's own multi-factor authentication works. Password sign-in for an account with a Firebase second factor (SMS or TOTP) enrolled is not supported in v1.
 - **No custom `oidc.*` or `saml.*` providers.** Only the providers in the `SocialProvider` enum.
 - **No API or token auth.** The plugin is for panel sessions only.
 - **No Firebase multi-tenancy, phone sign-in or anonymous sign-in.**
 - **Filament 5 only.**
 - **Emails come from Laravel.** Password reset and verification emails use Filament's notifications, not the Firebase email templates.
-- **Registration shows the "email taken" error only after the other fields pass validation.** A careful visitor can tell from this order whether an email has a local record or only a Firebase account.
+- **Registration may reveal where an email exists.** The plugin shows the same "email taken" error for a local record and for a Firebase-only account. The error may still appear at a different step of the validation, so a careful visitor may tell the two cases apart.
 - **No import of local password hashes** into Firebase.
 
 ## Security

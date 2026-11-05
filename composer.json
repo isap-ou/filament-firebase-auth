@@ -20,7 +20,7 @@
     "authors": [
         {
             "name": "ISAPP",
-            "email": "andrii.trush@isapp.be",
+            "email": "contact@isapp.be",
             "role": "Developer"
         },
         {
@@ -66,6 +66,9 @@
         "test:refactor": "rector --dry-run"
     },
     "extra": {
+        "branch-alias": {
+            "dev-main": "5.x-dev"
+        },
         "laravel": {
             "providers": [
                 "Isapp\\FilamentFirebaseAuth\\FilamentFirebaseAuthServiceProvider"

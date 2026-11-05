@@ -1,0 +1,63 @@
+name: emulator
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Runs the `emulator` test group against the Firebase Auth Emulator.
+# Each step after checkout skips while the repository has no firebase.json.
+jobs:
+  emulator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        if: hashFiles('firebase.json') != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      # firebase-tools needs Java 21 or later for the emulators.
+      - name: Setup Java
+        if: hashFiles('firebase.json') != ''
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Cache Composer dependencies
+        if: hashFiles('firebase.json') != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.composer/cache/files
+          key: composer-emulator-${{ hashFiles('composer.json') }}
+          restore-keys: |
+            composer-emulator-
+
+      - name: Setup PHP
+        if: hashFiles('firebase.json') != ''
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: 8.4
+          extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, sqlite, pdo_sqlite, bcmath, intl, fileinfo
+          coverage: none
+
+      - name: Install dependencies
+        if: hashFiles('firebase.json') != ''
+        run: composer update --prefer-stable --prefer-dist --no-interaction
+
+      # A `demo-` project ID needs no Firebase credentials. emulators:exec sets
+      # FIREBASE_AUTH_EMULATOR_HOST for the test process.
+      - name: Run emulator tests
+        if: hashFiles('firebase.json') != ''
+        run: npx firebase-tools emulators:exec --project demo-filament-firebase-auth --only auth "vendor/bin/pest --group=emulator"

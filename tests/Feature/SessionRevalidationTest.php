@@ -11,8 +11,10 @@ use Isapp\FilamentFirebaseAuth\Http\Middleware\ScheduleFirebaseSessionCheck;
 use Isapp\FilamentFirebaseAuth\Jobs\SyncFirebaseIdentity;
 use Kreait\Firebase\Exception\Auth\ApiConnectionFailed;
 use Kreait\Firebase\Exception\Auth\UserNotFound;
+use Livewire\Mechanisms\HandleRequests\HandleRequests;
 
 use function Pest\Laravel\get;
+use function Pest\Laravel\postJson;
 use function Pest\Laravel\travel;
 use function Pest\Laravel\withCookie;
 
@@ -84,12 +86,16 @@ it('marks a deleted firebase account as invalidated', function () {
 it('marks a disabled firebase account as invalidated', function () {
     $user = linkedUser();
     $fingerprint = $user->getAuthPassword();
+    $syncedAt = $user->firebaseIdentity?->synced_at?->getTimestamp();
     mockFirebase()->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord(['disabled' => true]));
 
+    travel(1)->minute();
     sessionCheckRunJob($user);
 
     $user->refresh();
+    // RefreshFirebaseIdentity writes the mark, so it also stamps synced_at.
     expect($user->firebaseIdentity?->invalidated_at)->not->toBeNull()
+        ->and($user->firebaseIdentity?->synced_at?->getTimestamp())->toBeGreaterThan($syncedAt)
         ->and($user->getAuthPassword())->not->toBe($fingerprint);
 });
 
@@ -211,4 +217,42 @@ it('is off when the interval is zero', function () {
 
     Bus::assertNothingDispatched();
     expect(session()->has('filament-firebase-auth.checked_at.app'))->toBeFalse();
+});
+
+it('reads the interval from a string or null config value', function () {
+    config()->set('filament-firebase-auth.revalidate_every', '15');
+    Bus::fake();
+    sessionCheckGuard()->login(linkedUser());
+
+    get('/app')->assertOk();
+    travel(10)->minutes();
+    get('/app')->assertOk();
+
+    Bus::assertDispatchedTimes(SyncFirebaseIdentity::class, 1);
+
+    // Null falls back to 15 minutes.
+    config()->set('filament-firebase-auth.revalidate_every', null);
+    travel(10)->minutes();
+    get('/app')->assertOk();
+
+    Bus::assertDispatchedTimes(SyncFirebaseIdentity::class, 2);
+});
+
+it('schedules a check on a livewire update request', function () {
+    Bus::fake();
+    sessionCheckGuard()->login(linkedUser());
+
+    $page = get('/app')->assertOk();
+
+    Bus::assertDispatchedTimes(SyncFirebaseIdentity::class, 1);
+    expect(preg_match('/wire:snapshot="([^"]+)"/', (string) $page->getContent(), $matches))->toBe(1);
+
+    travel(16)->minutes();
+    postJson(app(HandleRequests::class)->getUpdateUri(), [
+        'components' => [
+            ['snapshot' => html_entity_decode($matches[1]), 'updates' => [], 'calls' => []],
+        ],
+    ], ['X-Livewire' => 'true'])->assertOk();
+
+    Bus::assertDispatchedTimes(SyncFirebaseIdentity::class, 2);
 });

@@ -26,7 +26,8 @@ class ScheduleFirebaseSessionCheck
 
     public function handle(Request $request, Closure $next): Response
     {
-        $interval = $this->config->integer('filament-firebase-auth.revalidate_every');
+        // A host config can read the value from `env()`, so it can be a string. Null means the default.
+        $interval = (int) ($this->config->get('filament-firebase-auth.revalidate_every') ?? 15);
 
         if ($interval <= 0 || ! $request->hasSession()) {
             return $next($request);

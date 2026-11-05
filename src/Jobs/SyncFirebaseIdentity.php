@@ -7,6 +7,7 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Model;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Actions\Identity\RefreshFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Kreait\Firebase\Auth\UserRecord;
@@ -26,7 +27,7 @@ class SyncFirebaseIdentity implements ShouldQueue
 
     public function __construct(public readonly int | string $identityId) {}
 
-    public function handle(FindFirebaseUser $find, SyncsLocalUsers $sync): void
+    public function handle(FindFirebaseUser $find, SyncsLocalUsers $sync, RefreshFirebaseIdentity $refresh): void
     {
         $identity = FirebaseIdentity::query()->find($this->identityId);
 
@@ -42,9 +43,17 @@ class SyncFirebaseIdentity implements ShouldQueue
             return;
         }
 
-        if (! $firebaseUser instanceof UserRecord || $firebaseUser->disabled) {
+        if (! $firebaseUser instanceof UserRecord) {
+            // Firebase has no user to copy, so the job writes the mark itself.
             // An earlier mark stays, so the fingerprint does not change on each check.
             $identity->forceFill(['invalidated_at' => $identity->invalidated_at ?? now()])->save();
+
+            return;
+        }
+
+        if ($firebaseUser->disabled) {
+            // The record is not synced. RefreshFirebaseIdentity sets the mark of a disabled user.
+            $refresh->handle($identity, $firebaseUser);
 
             return;
         }

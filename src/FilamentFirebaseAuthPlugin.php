@@ -57,12 +57,15 @@ class FilamentFirebaseAuthPlugin implements Plugin
      * Adds the background session check. Laravel's `AuthenticateSession` does the logout,
      * so the plugin adds Filament's subclass when the panel has no session authentication yet.
      *
+     * The check is persistent middleware, so Livewire update requests run it too.
+     * Filament makes `AuthenticateSession` persistent already.
+     *
      * Filament calls `register()` when the panel adds the plugin. Middleware that the panel adds
      * later is not visible here. The router removes a second entry of the same class.
      */
     private function registerSessionCheck(Panel $panel): void
     {
-        $panel->authMiddleware([ScheduleFirebaseSessionCheck::class]);
+        $panel->authMiddleware([ScheduleFirebaseSessionCheck::class], isPersistent: true);
 
         foreach ($panel->getMiddleware() as $middleware) {
             if (is_a(Str::before($middleware, ':'), AuthenticatesSessions::class, true)) {

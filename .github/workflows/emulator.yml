@@ -56,8 +56,14 @@ jobs:
         if: hashFiles('firebase.json') != ''
         run: composer update --prefer-stable --prefer-dist --no-interaction
 
+      # package.json pins the firebase-tools version, so Dependabot can update it.
+      # The emulator needs no install scripts.
+      - name: Install firebase-tools
+        if: hashFiles('firebase.json') != ''
+        run: npm ci --ignore-scripts
+
       # A `demo-` project ID needs no Firebase credentials. emulators:exec sets
-      # FIREBASE_AUTH_EMULATOR_HOST for the test process.
+      # FIREBASE_AUTH_EMULATOR_HOST for the test process. npx runs the local firebase-tools.
       - name: Run emulator tests
         if: hashFiles('firebase.json') != ''
-        run: npx --yes firebase-tools@15.35.0 emulators:exec --project demo-filament-firebase-auth --only auth "vendor/bin/pest --group=emulator"
+        run: npx firebase-tools emulators:exec --project demo-filament-firebase-auth --only auth "vendor/bin/pest --group=emulator"

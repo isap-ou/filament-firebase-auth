@@ -66,6 +66,7 @@
         "lint": "pint",
         "refactor": "rector",
         "test": "pest",
+        "test:emulator": "npx firebase-tools emulators:exec --project demo-filament-firebase-auth --only auth \"vendor/bin/pest --group=emulator\"",
         "test:lint": "pint --test",
         "test:refactor": "rector --dry-run"
     },

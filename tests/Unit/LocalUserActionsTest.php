@@ -8,6 +8,8 @@ use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\LegacyUser;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
 
+use function Pest\Laravel\travel;
+
 it('binds the contracts to the default actions', function () {
     expect(app(CreatesLocalUsers::class))->toBeInstanceOf(CreateLocalUser::class)
         ->and(app(SyncsLocalUsers::class))->toBeInstanceOf(SyncLocalUser::class);
@@ -96,4 +98,45 @@ it('keeps other database errors as they are', function () {
 
     expect(fn () => app(CreatesLocalUsers::class)->handle(userRecord(), User::class, null))
         ->toThrow(QueryException::class);
+});
+
+it('invalidates the link of a disabled firebase user', function () {
+    $user = linkedUser();
+
+    app(SyncsLocalUsers::class)->handle($user, userRecord(['disabled' => true]));
+    $invalidatedAt = $user->refresh()->firebaseIdentity?->invalidated_at;
+
+    travel(1)->hour();
+    app(SyncsLocalUsers::class)->handle($user, userRecord(['disabled' => true]));
+
+    expect($invalidatedAt)->not->toBeNull()
+        ->and($user->refresh()->firebaseIdentity?->invalidated_at?->getTimestamp())->toBe($invalidatedAt?->getTimestamp());
+});
+
+it('refuses to sync a record without a link', function () {
+    $user = User::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+
+    expect(fn () => app(SyncsLocalUsers::class)->handle($user, userRecord(['displayName' => 'Mallory'])))
+        ->toThrow(LogicException::class);
+
+    expect($user->refresh()->getAttribute('name'))->toBe('Jane');
+});
+
+it('refuses to sync an unsaved record', function () {
+    expect(fn () => app(SyncsLocalUsers::class)->handle(new User, userRecord()))
+        ->toThrow(LogicException::class)
+        ->and(User::query()->count())->toBe(0);
+});
+
+it('saves only a change of name or email', function () {
+    $user = linkedUser();
+    $user->setAttribute('remember_token', 'changed-elsewhere');
+    $saves = 0;
+    User::saving(function () use (&$saves): void {
+        $saves++;
+    });
+
+    app(SyncsLocalUsers::class)->handle($user, userRecord(['displayName' => 'Jane']));
+
+    expect($saves)->toBe(0);
 });

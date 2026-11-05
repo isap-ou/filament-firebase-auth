@@ -1,7 +1,10 @@
 <?php
 
+use GuzzleHttp\Psr7\Response;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
+use Kreait\Firebase\Auth\SignIn\FailedToSignIn;
 use Kreait\Firebase\Auth\SignInResult;
+use Kreait\Firebase\Auth\SignInWithEmailAndPassword;
 use Kreait\Firebase\Auth\UserRecord;
 use Kreait\Firebase\Contract\Auth;
 use Mockery\MockInterface;
@@ -35,6 +38,18 @@ function userRecord(array $overrides = []): UserRecord
 function signInResult(string $uid): SignInResult
 {
     return SignInResult::fromData(['localId' => $uid]);
+}
+
+/**
+ * Build the sign-in failure that Firebase gives for an HTTP error response.
+ * A 4xx status rejects the credentials. A 5xx status means that Firebase failed.
+ */
+function failedSignIn(int $status, string $reason): FailedToSignIn
+{
+    return FailedToSignIn::withActionAndResponse(
+        SignInWithEmailAndPassword::fromValues('jane@example.com', 'secret'),
+        new Response($status, [], '{"error":{"message":"' . $reason . '"}}'),
+    );
 }
 
 /**

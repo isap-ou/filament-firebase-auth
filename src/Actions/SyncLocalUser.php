@@ -10,15 +10,29 @@ use Kreait\Firebase\Auth\UserRecord;
 use LogicException;
 
 /**
- * Copies the Firebase name and email to the record and refreshes the link columns.
+ * Copies the Firebase name and email to a linked record and refreshes the link columns.
  */
 class SyncLocalUser implements SyncsLocalUsers
 {
+    public function __construct(protected RefreshFirebaseIdentity $refreshFirebaseIdentity) {}
+
+    /**
+     * Refuses an unsaved record, a record without a link and a record linked to another Firebase user.
+     * Only the owner of the link may write to the record.
+     */
     public function handle(Model & Authenticatable $user, UserRecord $firebaseUser): void
     {
+        if (! $user->exists) {
+            throw new LogicException('Only a saved record can be synced.');
+        }
+
         $identity = $user->getRelationValue('firebaseIdentity');
 
-        if ($identity instanceof FirebaseIdentity && $identity->firebase_uid !== $firebaseUser->uid) {
+        if (! $identity instanceof FirebaseIdentity) {
+            throw new LogicException('The record has no link to a Firebase user.');
+        }
+
+        if ($identity->firebase_uid !== $firebaseUser->uid) {
             throw new LogicException('The record is linked to another Firebase user.');
         }
 
@@ -30,20 +44,10 @@ class SyncLocalUser implements SyncsLocalUsers
             $user->setAttribute('email', $firebaseUser->email);
         }
 
-        if ($user->isDirty()) {
+        if ($user->isDirty(['name', 'email'])) {
             $user->save();
         }
 
-        if (! $identity instanceof FirebaseIdentity) {
-            return;
-        }
-
-        // A successful read means that the account exists and is enabled.
-        $identity->forceFill([
-            'email_verified_at' => $firebaseUser->emailVerified ? ($identity->email_verified_at ?? $identity->freshTimestamp()) : null,
-            'synced_at' => $identity->freshTimestamp(),
-            'tokens_valid_after' => $firebaseUser->tokensValidAfterTime,
-            'invalidated_at' => null,
-        ])->save();
+        $this->refreshFirebaseIdentity->handle($identity, $firebaseUser);
     }
 }

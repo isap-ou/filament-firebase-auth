@@ -12,7 +12,8 @@ use Kreait\Firebase\Auth\UserRecord;
  * The plugin calls it on each sign-in and on each session check.
  * A host app that binds its own class must also update the link columns, as the default does:
  * `email_verified_at`, `synced_at`, `tokens_valid_after` and `invalidated_at`.
- * Without these updates, session invalidation breaks.
+ * Without these updates, session invalidation breaks. Call `RefreshFirebaseIdentity::handle()`
+ * with the link of the record to write the four columns.
  */
 interface SyncsLocalUsers
 {

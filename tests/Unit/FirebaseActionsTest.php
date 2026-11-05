@@ -1,6 +1,5 @@
 <?php
 
-use GuzzleHttp\Psr7\Response;
 use Isapp\FilamentFirebaseAuth\Actions\CheckFirebasePassword;
 use Isapp\FilamentFirebaseAuth\Actions\CreateFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\DeleteFirebaseUser;
@@ -9,20 +8,13 @@ use Isapp\FilamentFirebaseAuth\Actions\FindFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\FindFirebaseUserByEmail;
 use Isapp\FilamentFirebaseAuth\Actions\FindOrCreateFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\LinkFirebaseIdentity;
+use Isapp\FilamentFirebaseAuth\Actions\SetFirebaseEmailVerified;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
+use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\Admin;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
 use Kreait\Firebase\Auth\SignIn\FailedToSignIn;
-use Kreait\Firebase\Auth\SignInWithEmailAndPassword;
 use Kreait\Firebase\Exception\Auth\ApiConnectionFailed;
 use Kreait\Firebase\Exception\Auth\UserNotFound;
-
-function failedSignIn(int $status, string $reason): FailedToSignIn
-{
-    return FailedToSignIn::withActionAndResponse(
-        SignInWithEmailAndPassword::fromValues('jane@example.com', 'secret'),
-        new Response($status, [], '{"error":{"message":"' . $reason . '"}}'),
-    );
-}
 
 it('keeps one instance of the memoizing actions per request', function () {
     mockFirebase();
@@ -220,4 +212,43 @@ it('treats a missing account as deleted', function () {
     mockFirebase()->shouldReceive('deleteUser')->once()->andThrow(new UserNotFound('No user'));
 
     app(DeleteFirebaseUser::class)->handle('uid-9');
+});
+
+it('refuses to link a disabled firebase user', function () {
+    $user = User::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+
+    expect(fn () => app(LinkFirebaseIdentity::class)->handle($user, userRecord(['disabled' => true])))
+        ->toThrow(LogicException::class, 'disabled')
+        ->and(FirebaseIdentity::query()->count())->toBe(0);
+});
+
+it('refuses to link a uid that another record of the model already has', function () {
+    linkedUser(uid: 'uid-1');
+    $other = User::query()->create(['name' => 'John', 'email' => 'john@example.com']);
+
+    expect(fn () => app(LinkFirebaseIdentity::class)->handle($other, userRecord()))
+        ->toThrow(LogicException::class, 'another record')
+        ->and(FirebaseIdentity::query()->count())->toBe(1);
+});
+
+it('links the same uid to records of different models', function () {
+    linkedUser(uid: 'uid-1');
+    $admin = Admin::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+
+    app(LinkFirebaseIdentity::class)->handle($admin, userRecord());
+
+    expect(FirebaseIdentity::query()->count())->toBe(2)
+        ->and($admin->getFirebaseUid())->toBe('uid-1');
+});
+
+it('refuses to link an unsaved record', function () {
+    expect(fn () => app(LinkFirebaseIdentity::class)->handle(new User, userRecord()))
+        ->toThrow(LogicException::class)
+        ->and(FirebaseIdentity::query()->count())->toBe(0);
+});
+
+it('sets the email verification in firebase', function () {
+    mockFirebase()->shouldReceive('updateUser')->once()->with('uid-1', ['emailVerified' => true])->andReturn(userRecord());
+
+    app(SetFirebaseEmailVerified::class)->handle('uid-1', true);
 });

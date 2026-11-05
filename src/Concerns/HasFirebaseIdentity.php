@@ -8,8 +8,8 @@ use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Illuminate\Support\Str;
 use Isapp\FilamentFirebaseAuth\Actions\DetectPasswordProvider;
 use Isapp\FilamentFirebaseAuth\Actions\FindFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Actions\SetFirebaseEmailVerified;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
-use Kreait\Firebase\Contract\Auth;
 
 /**
  * Connects a host model to its Firebase user through the link table.
@@ -152,7 +152,7 @@ trait HasFirebaseIdentity
             return false;
         }
 
-        app(Auth::class)->updateUser($identity->firebase_uid, ['emailVerified' => $verified]);
+        app(SetFirebaseEmailVerified::class)->handle($identity->firebase_uid, $verified);
 
         return $identity->forceFill([
             'email_verified_at' => $verified ? $identity->freshTimestamp() : null,

@@ -21,6 +21,7 @@ return [
         'popup_blocked' => 'The browser blocked the sign-in window. Allow pop-ups for this site and try again.',
         'account_exists' => 'This email already has an account with another sign-in method. Sign in with that method.',
         'generic' => 'The sign-in failed. Try again.',
+        'session_expired' => 'The page has expired. Reload the page and try again.',
     ],
 
 ];

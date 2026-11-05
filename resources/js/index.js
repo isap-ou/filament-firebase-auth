@@ -82,6 +82,16 @@ export default function firebaseSignIn({ config, providers, endpoint, messages }
 
         error: null,
 
+        // Safari and mobile browsers block a popup that opens after other async work in the click.
+        // So Firebase Auth starts when the buttons appear, and `signInWithPopup()` is the first await of the click.
+        init() {
+            try {
+                getFirebaseAuth(config)
+            } catch {
+                // An invalid web config fails again on the click, and the click shows the error.
+            }
+        },
+
         async signIn(providerId) {
             const options = providers.find((provider) => provider.id === providerId)
 
@@ -122,7 +132,12 @@ export default function firebaseSignIn({ config, providers, endpoint, messages }
                     return
                 }
 
-                this.error = response.status === 422 && typeof body.message === 'string' ? body.message : messages.generic
+                if (response.status === 419) {
+                    // The CSRF token of the page is no longer valid, for example after a long idle time.
+                    this.error = messages.sessionExpired
+                } else {
+                    this.error = response.status === 422 && typeof body.message === 'string' ? body.message : messages.generic
+                }
             } catch (error) {
                 this.error = popupErrorMessage(error, messages)
             } finally {

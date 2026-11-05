@@ -46,6 +46,20 @@ enum SocialProvider: string implements HasLabel
         };
     }
 
+    /**
+     * The scopes that the provider always asks for. Firebase documents `email` and `name` for Apple
+     * (https://firebase.google.com/docs/auth/web/apple).
+     *
+     * @return list<string>
+     */
+    public function getDefaultScopes(): array
+    {
+        return match ($this) {
+            self::Apple => ['email', 'name'],
+            default => [],
+        };
+    }
+
     private function key(): string
     {
         return strtolower($this->name);

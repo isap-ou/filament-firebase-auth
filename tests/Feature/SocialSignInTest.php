@@ -1,11 +1,14 @@
 <?php
 
 use Filament\Facades\Filament;
+use Filament\FilamentServiceProvider;
 use Filament\Panel;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
+use Isapp\FilamentFirebaseAuth\Actions\Identity\EnsureFirebaseIdentityLinkable;
+use Isapp\FilamentFirebaseAuth\Actions\Identity\ResolveLocalUser;
 use Isapp\FilamentFirebaseAuth\Contracts\SocialSignInMethod;
 use Isapp\FilamentFirebaseAuth\Enums\SocialProvider;
 use Isapp\FilamentFirebaseAuth\FilamentFirebaseAuthPlugin;
@@ -25,15 +28,30 @@ use function Pest\Laravel\postJson;
 use function Pest\Laravel\withSession;
 
 /**
- * Builds a verified Firebase ID token with the given `sub` claim.
+ * Builds a verified Firebase ID token. By default it proves a Google sign-in of right now.
  */
-function socialSignInToken(string $uid = 'uid-1'): UnencryptedToken
+function socialSignInToken(string $uid = 'uid-1', string $signInProvider = 'google.com', ?int $authTime = null): UnencryptedToken
 {
     return new Plain(
         new DataSet(['alg' => 'RS256'], ''),
-        new DataSet(['sub' => $uid], ''),
+        new DataSet([
+            'sub' => $uid,
+            'auth_time' => $authTime ?? now()->getTimestamp(),
+            'firebase' => ['identities' => [], 'sign_in_provider' => $signInProvider],
+        ], ''),
         new Signature('signature', 'signature'),
     );
+}
+
+/**
+ * Loads Filament's panel routes again, for example after a test gave a panel its providers.
+ */
+function socialSignInReloadRoutes(): void
+{
+    require dirname((string) (new ReflectionClass(FilamentServiceProvider::class))->getFileName(), 2) . '/routes/web.php';
+
+    Route::getRoutes()->refreshNameLookups();
+    Route::getRoutes()->refreshActionLookups();
 }
 
 /**
@@ -127,7 +145,7 @@ it('puts the sign-in route inside the panel middleware', function () {
     expect($route)->not->toBeNull()
         ->and($route->methods())->toContain('POST')
         ->and($route->uri())->toBe('app/firebase/sign-in')
-        ->and($route->gatherMiddleware())->toContain(StartSession::class, VerifyCsrfToken::class, 'throttle:5,1');
+        ->and($route->gatherMiddleware())->toContain(StartSession::class, VerifyCsrfToken::class, 'throttle:filament-firebase-auth');
 });
 
 it('signs in with a verified id token', function () {
@@ -211,6 +229,8 @@ it('rejects a user who cannot access the panel', function () {
 
 it('blocks and cleans up a new account on a closed panel in new_only mode', function () {
     config()->set('filament-firebase-auth.delete_accounts', 'new_only');
+    socialSignInPlugin('admin')->providers([SocialProvider::Google]);
+    socialSignInReloadRoutes();
 
     $firebase = mockFirebase();
     $firebase->shouldReceive('verifyIdToken')->once()->with('token-1', true)->andReturn(socialSignInToken('uid-new'));
@@ -230,6 +250,12 @@ it('blocks and cleans up a new account on a closed panel in new_only mode', func
 });
 
 it('blocks a new account on a closed panel without deleting it by default', function () {
+    socialSignInPlugin('admin')->providers([SocialProvider::Google]);
+    socialSignInReloadRoutes();
+    // In `never` mode the action skips the second resolve that only the deletion path needs.
+    $resolver = Mockery::mock(ResolveLocalUser::class, [app(EnsureFirebaseIdentityLinkable::class)])->makePartial();
+    $resolver->shouldReceive('handle')->once()->passthru();
+    app()->instance(ResolveLocalUser::class, $resolver);
     $firebase = mockFirebase();
     $firebase->shouldReceive('verifyIdToken')->once()->andReturn(socialSignInToken('uid-new'));
     $firebase->shouldReceive('getUser')->once()->andReturn(userRecord(['localId' => 'uid-new', 'email' => 'new@example.com']));
@@ -300,4 +326,102 @@ it('fails closed when firebase is unreachable', function () {
     $log->shouldHaveReceived('error')->once()->withArgs(
         fn (string $message, array $context): bool => $context === ['exception' => ApiConnectionFailed::class],
     );
+});
+
+it('has no sign-in route on a panel without providers', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldNotReceive('verifyIdToken');
+
+    expect(Route::getRoutes()->getByName('filament.admin.firebase.sign-in'))->toBeNull();
+
+    postJson('/admin/firebase/sign-in', ['credential' => 'token-1'])->assertNotFound();
+});
+
+it('rejects a password provider token', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->with('token-1', true)->andReturn(socialSignInToken('uid-1', 'password'));
+    $firebase->shouldNotReceive('getUser');
+    linkedUser();
+
+    postJson('/app/firebase/sign-in', ['credential' => 'token-1'])
+        ->assertStatus(422)
+        ->assertExactJson(['message' => __('filament-panels::auth/pages/login.messages.failed')]);
+
+    expect(auth('app')->check())->toBeFalse();
+});
+
+it('rejects a token of a provider that the panel does not list', function (string $signInProvider) {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->andReturn(socialSignInToken('uid-1', $signInProvider));
+    $firebase->shouldNotReceive('getUser');
+    linkedUser();
+
+    postJson('/app/firebase/sign-in', ['credential' => 'token-1'])->assertStatus(422);
+
+    expect(auth('app')->check())->toBeFalse();
+})->with(['github.com', 'anonymous', 'phone', 'custom']);
+
+it('rejects a token without a sign-in provider claim', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->andReturn(new Plain(
+        new DataSet(['alg' => 'RS256'], ''),
+        new DataSet(['sub' => 'uid-1', 'auth_time' => now()->getTimestamp()], ''),
+        new Signature('signature', 'signature'),
+    ));
+    $firebase->shouldNotReceive('getUser');
+
+    postJson('/app/firebase/sign-in', ['credential' => 'token-1'])->assertStatus(422);
+});
+
+it('rejects a token of an old sign-in', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->andReturn(socialSignInToken('uid-1', 'google.com', now()->subMinutes(6)->getTimestamp()));
+    $firebase->shouldNotReceive('getUser');
+    linkedUser();
+
+    postJson('/app/firebase/sign-in', ['credential' => 'token-1'])->assertStatus(422);
+
+    expect(auth('app')->check())->toBeFalse();
+});
+
+it('accepts a token of a sign-in within five minutes', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->andReturn(socialSignInToken('uid-1', 'google.com', now()->subMinutes(4)->getTimestamp()));
+    $firebase->shouldReceive('getUser')->once()->andReturn(userRecord());
+    linkedUser();
+
+    postJson('/app/firebase/sign-in', ['credential' => 'token-1'])->assertOk();
+
+    expect(auth('app')->check())->toBeTrue();
+});
+
+it('rate limits each panel on its own', function () {
+    socialSignInPlugin('admin')->providers([SocialProvider::Google]);
+    socialSignInReloadRoutes();
+
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->times(6)->andThrow(new FailedToVerifyToken('The token is invalid.'));
+
+    foreach (range(1, 5) as $attempt) {
+        postJson('/app/firebase/sign-in', ['credential' => 'token-1'])->assertStatus(422);
+    }
+
+    postJson('/app/firebase/sign-in', ['credential' => 'token-1'])->assertStatus(429);
+    postJson('/admin/firebase/sign-in', ['credential' => 'token-1'])->assertStatus(422);
+});
+
+it('asks apple for the email and name scopes', function () {
+    $plugin = FilamentFirebaseAuthPlugin::make()
+        ->providerScopes(SocialProvider::Apple, ['name', 'extra']);
+
+    expect($plugin->getProviderScopes(SocialProvider::Apple))->toBe(['email', 'name', 'extra'])
+        ->and(SocialProvider::Apple->getDefaultScopes())->toBe(['email', 'name'])
+        ->and(SocialProvider::Google->getDefaultScopes())->toBe([]);
+});
+
+it('passes the session expired message to the buttons', function () {
+    get('/app/login')
+        ->assertOk()
+        ->assertSee('sessionExpired')
+        ->assertSee(__('filament-firebase-auth::social.errors.session_expired'));
 });

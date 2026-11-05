@@ -2,10 +2,14 @@
 
 namespace Isapp\FilamentFirebaseAuth;
 
+use Filament\FilamentManager;
 use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\RateLimiter;
 use InvalidArgumentException;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\CheckFirebasePassword;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
@@ -81,6 +85,8 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
      * Registers the JS bundle of the social buttons. It loads only on a page that shows the buttons.
      * Binds the social sign-in method that the config key `social_sign_in` selects.
      * A host app can bind its own class to the contract.
+     * Defines the rate limiter of the sign-in route: 5 attempts per minute for each panel and IP address,
+     * the limit of Filament's login form.
      */
     private function registerSocialSignIn(): void
     {
@@ -99,5 +105,9 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
 
             return $app->make(JsSdkSignIn::class);
         });
+
+        RateLimiter::for('filament-firebase-auth', fn (Request $request): Limit => Limit::perMinute(5)->by(
+            'filament-firebase-auth:' . $this->app->make(FilamentManager::class)->getCurrentPanel()?->getId() . ':' . $request->ip(),
+        ));
     }
 }

@@ -7,12 +7,14 @@ use Filament\Panel;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Auth\EloquentUserProvider;
 use Illuminate\Auth\SessionGuard;
+use Illuminate\Config\Repository;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\PersistResolvedUser;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\ResolveLocalUser;
 use Isapp\FilamentFirebaseAuth\Contracts\SocialSignInMethod;
+use Isapp\FilamentFirebaseAuth\Enums\DeleteAccounts;
 use Isapp\FilamentFirebaseAuth\Enums\DeletionReason;
 use Isapp\FilamentFirebaseAuth\Enums\Resolution;
 use Isapp\FilamentFirebaseAuth\FilamentFirebaseAuthPlugin;
@@ -34,6 +36,7 @@ class SignInWithFirebaseCredential
         protected ResolveLocalUser $resolveLocalUser,
         protected PersistResolvedUser $persistResolvedUser,
         protected DeleteFirebaseUserIfAllowed $deleteFirebaseUserIfAllowed,
+        protected Repository $config,
         protected LoggerInterface $logger,
     ) {}
 
@@ -41,6 +44,7 @@ class SignInWithFirebaseCredential
      * Proves the Firebase user, resolves and saves the local record, checks `canAccessPanel()`
      * and logs in with the panel guard.
      *
+     * The credential must come from one of the panel providers. A panel without providers fails.
      * A closed panel blocks a Firebase user without a record. Then the deletion policy runs.
      *
      * @throws AuthenticationException on any failure. The exception has no detail.
@@ -50,12 +54,15 @@ class SignInWithFirebaseCredential
         $guard = $panel->auth();
         $provider = $guard instanceof SessionGuard ? $guard->getProvider() : null;
 
-        if (! $guard instanceof SessionGuard || ! $provider instanceof EloquentUserProvider) {
+        $plugin = $this->plugin($panel);
+
+        // The plugin adds no route to a panel without providers. This check is a second line of defense.
+        if (! $guard instanceof SessionGuard || ! $provider instanceof EloquentUserProvider || ! $plugin instanceof FilamentFirebaseAuthPlugin || $plugin->getProviders() === []) {
             throw new AuthenticationException;
         }
 
         try {
-            $user = $this->resolveAndPersist($credential, $panel, $provider->getModel());
+            $user = $this->resolveAndPersist($credential, $panel, $plugin, $provider->getModel());
         } catch (FirebaseException $exception) {
             // A transport message can contain the request URL with the API key, so the log names the class only.
             $this->logger->error('Firebase failed during a social sign-in.', ['exception' => $exception::class]);
@@ -82,10 +89,10 @@ class SignInWithFirebaseCredential
     /**
      * @param  class-string<Model&Authenticatable>  $model
      */
-    protected function resolveAndPersist(#[SensitiveParameter] string $credential, Panel $panel, string $model): Model & Authenticatable
+    protected function resolveAndPersist(#[SensitiveParameter] string $credential, Panel $panel, FilamentFirebaseAuthPlugin $plugin, string $model): Model & Authenticatable
     {
-        $firebaseUser = $this->socialSignInMethod->verify($credential);
-        $createOnSignIn = $this->shouldCreateOnSignIn($panel);
+        $firebaseUser = $this->socialSignInMethod->verify($credential, $plugin->getProviders());
+        $createOnSignIn = $plugin->shouldCreateOnSignIn();
         $resolved = $this->resolveLocalUser->handle($firebaseUser, $model, $createOnSignIn);
 
         if ($resolved->resolution === Resolution::Blocked) {
@@ -107,6 +114,10 @@ class SignInWithFirebaseCredential
      */
     protected function deleteIfBlockedOnClosedPanel(UserRecord $firebaseUser, string $model): void
     {
+        if (DeleteAccounts::from($this->config->string('filament-firebase-auth.delete_accounts')) === DeleteAccounts::Never) {
+            return;
+        }
+
         if ($this->resolveLocalUser->handle($firebaseUser, $model, true)->resolution !== Resolution::New) {
             return;
         }
@@ -114,14 +125,10 @@ class SignInWithFirebaseCredential
         $this->deleteFirebaseUserIfAllowed->handle($firebaseUser, DeletionReason::BlockedOnClosedPanel);
     }
 
-    protected function shouldCreateOnSignIn(Panel $panel): bool
+    protected function plugin(Panel $panel): ?FilamentFirebaseAuthPlugin
     {
-        if (! $panel->hasPlugin('filament-firebase-auth')) {
-            return false;
-        }
+        $plugin = $panel->hasPlugin('filament-firebase-auth') ? $panel->getPlugin('filament-firebase-auth') : null;
 
-        $plugin = $panel->getPlugin('filament-firebase-auth');
-
-        return $plugin instanceof FilamentFirebaseAuthPlugin && $plugin->shouldCreateOnSignIn();
+        return $plugin instanceof FilamentFirebaseAuthPlugin ? $plugin : null;
     }
 }

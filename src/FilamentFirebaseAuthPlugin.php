@@ -9,6 +9,7 @@ use Filament\Support\Concerns\EvaluatesClosures;
 use Filament\View\PanelsRenderHook;
 use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\HtmlString;
 use Isapp\FilamentFirebaseAuth\Actions\Panels\EnsurePanelUsesFirebasePages;
 use Isapp\FilamentFirebaseAuth\Contracts\SocialSignInMethod;
 use Isapp\FilamentFirebaseAuth\Enums\SocialProvider;
@@ -114,6 +115,7 @@ class FilamentFirebaseAuthPlugin implements Plugin
 
     /**
      * The OAuth scopes that the provider asks for, for example `mail.read` for Microsoft.
+     * They add to the default scopes of the provider (`SocialProvider::getDefaultScopes()`).
      *
      * @param  array<string>  $scopes
      */
@@ -125,11 +127,16 @@ class FilamentFirebaseAuthPlugin implements Plugin
     }
 
     /**
+     * The default scopes of the provider, then the scopes from `providerScopes()`, without repeats.
+     *
      * @return list<string>
      */
     public function getProviderScopes(SocialProvider $provider): array
     {
-        return $this->providerScopes[$provider->value] ?? [];
+        return array_values(array_unique([
+            ...$provider->getDefaultScopes(),
+            ...$this->providerScopes[$provider->value] ?? [],
+        ]));
     }
 
     /**
@@ -154,19 +161,26 @@ class FilamentFirebaseAuthPlugin implements Plugin
 
     /**
      * Adds the sign-in route to the panel route group, so it has the panel middleware.
-     * Adds the buttons to Filament's own login and registration pages when the panel has providers.
+     * Adds the buttons to Filament's own login and registration pages.
+     *
+     * A panel without providers gets no route and no buttons. Both closures read the providers
+     * when Filament calls them, so the order of the plugin settings does not matter.
      */
     private function registerSocialSignIn(Panel $panel): void
     {
-        $panel->routes(fn () => Route::post('firebase/sign-in', FirebaseSignInController::class)
-            ->middleware('throttle:5,1')
-            ->name('firebase.sign-in'));
+        $panel->routes(function (): void {
+            if ($this->getProviders() === []) {
+                return;
+            }
 
-        if ($this->getProviders() === []) {
-            return;
-        }
+            Route::post('firebase/sign-in', FirebaseSignInController::class)
+                ->middleware('throttle:filament-firebase-auth')
+                ->name('firebase.sign-in');
+        });
 
-        $buttons = fn (): Htmlable => app(SocialSignInMethod::class)->renderButtons($panel, $this->getProviders());
+        $buttons = fn (): Htmlable => $this->getProviders() === []
+            ? new HtmlString('')
+            : app(SocialSignInMethod::class)->renderButtons($panel, $this->getProviders());
 
         $panel->renderHook(PanelsRenderHook::AUTH_LOGIN_FORM_AFTER, $buttons);
         $panel->renderHook(PanelsRenderHook::AUTH_REGISTER_FORM_AFTER, $buttons);

@@ -25,9 +25,12 @@ interface SocialSignInMethod
     public function renderButtons(Panel $panel, array $providers): Htmlable;
 
     /**
-     * Returns the Firebase user that the credential proves.
+     * Returns the Firebase user that the credential proves. The credential must come from one of
+     * the given providers. Any other sign-in (for example a password, anonymous or custom token) fails.
+     *
+     * @param  array<SocialProvider>  $providers
      *
      * @throws AuthenticationException on any failure. The exception has no detail.
      */
-    public function verify(#[SensitiveParameter] string $credential): UserRecord;
+    public function verify(#[SensitiveParameter] string $credential, array $providers): UserRecord;
 }

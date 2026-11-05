@@ -15,6 +15,7 @@ use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
+use Isapp\FilamentFirebaseAuth\Enums\SocialProvider;
 use Isapp\FilamentFirebaseAuth\FilamentFirebaseAuthPlugin;
 use Isapp\FilamentFirebaseAuth\Pages\EditProfile;
 use Isapp\FilamentFirebaseAuth\Pages\Register;
@@ -39,7 +40,7 @@ class AppPanelProvider extends PanelProvider
             ->plugin(
                 FilamentFirebaseAuthPlugin::make()
                     ->createOnSignIn(true)
-                    ->providers(['google.com']),
+                    ->providers([SocialProvider::Google]),
             )
             ->pages([Dashboard::class])
             ->middleware([

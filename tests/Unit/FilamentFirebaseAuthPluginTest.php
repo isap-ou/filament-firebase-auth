@@ -2,6 +2,7 @@
 
 use Filament\Facades\Filament;
 use Filament\Panel;
+use Isapp\FilamentFirebaseAuth\Enums\SocialProvider;
 use Isapp\FilamentFirebaseAuth\FilamentFirebaseAuthPlugin;
 use Isapp\FilamentFirebaseAuth\Support\CurrentPlugin;
 
@@ -16,10 +17,10 @@ it('has the plugin id and open defaults', function () {
 it('stores the panel settings', function () {
     $plugin = FilamentFirebaseAuthPlugin::make()
         ->createOnSignIn(false)
-        ->providers(['google.com', 'github.com']);
+        ->providers([SocialProvider::Google, SocialProvider::GitHub]);
 
     expect($plugin->shouldCreateOnSignIn())->toBeFalse()
-        ->and($plugin->getProviders())->toBe(['google.com', 'github.com']);
+        ->and($plugin->getProviders())->toBe([SocialProvider::Google, SocialProvider::GitHub]);
 });
 
 it('evaluates a closure for create on sign-in', function () {

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <g fill="none" stroke-width="3.5">
+        <path stroke="#EA4335" d="M17.657 6.343A8 8 0 0 0 5.072 8"/>
+        <path stroke="#FBBC05" d="M5.072 8A8 8 0 0 0 5.072 16"/>
+        <path stroke="#34A853" d="M5.072 16A8 8 0 0 0 17.657 17.657"/>
+        <path stroke="#4285F4" d="M17.657 17.657A8 8 0 0 0 20 12H12"/>
+    </g>
+</svg>

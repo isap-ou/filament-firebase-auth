@@ -11,7 +11,10 @@ use Kreait\Firebase\Auth\UserRecord;
 use LogicException;
 
 /**
- * Copies the Firebase name and email to a linked record and refreshes the link columns.
+ * Refreshes the link columns, then copies the Firebase name and email to a linked record.
+ *
+ * The link holds the session state (revoked tokens, a disabled account). It is written first, so a
+ * failed record save (for example an email that another record holds) never stops the session check.
  */
 class SyncLocalUser implements SyncsLocalUsers
 {
@@ -37,6 +40,8 @@ class SyncLocalUser implements SyncsLocalUsers
             throw new LogicException('The record is linked to another Firebase user.');
         }
 
+        $this->refreshFirebaseIdentity->handle($identity, $firebaseUser);
+
         if ($firebaseUser->displayName !== null) {
             $user->setAttribute('name', $firebaseUser->displayName);
         }
@@ -48,7 +53,5 @@ class SyncLocalUser implements SyncsLocalUsers
         if ($user->isDirty(['name', 'email'])) {
             $user->save();
         }
-
-        $this->refreshFirebaseIdentity->handle($identity, $firebaseUser);
     }
 }

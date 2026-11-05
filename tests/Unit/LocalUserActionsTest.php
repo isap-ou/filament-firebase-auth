@@ -93,6 +93,20 @@ it('refuses to sync a record linked to another uid', function () {
     expect($user->refresh()->getAttribute('name'))->toBe('Jane');
 });
 
+it('refreshes the link before a record save that fails', function () {
+    // Another app gave the Firebase account an email that another local record holds.
+    User::query()->create(['name' => 'John', 'email' => 'taken@example.com']);
+    $user = linkedUser();
+    $user->firebaseIdentity?->update(['tokens_valid_after' => now()->subHour()]);
+
+    expect(fn () => app(SyncsLocalUsers::class)->handle($user, userRecord([
+        'email' => 'taken@example.com',
+        'validSince' => '1700000000',
+    ])))->toThrow(QueryException::class);
+
+    expect($user->firebaseIdentity?->fresh()?->tokens_valid_after?->getTimestamp())->toBe(1700000000);
+});
+
 it('keeps other database errors as they are', function () {
     app(CreatesLocalUsers::class)->handle(userRecord(), User::class, null);
 

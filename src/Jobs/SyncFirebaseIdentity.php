@@ -6,6 +6,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FetchFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\RefreshFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
@@ -62,13 +63,24 @@ class SyncFirebaseIdentity implements ShouldQueue
             return;
         }
 
+        // The link state goes first. A host sync class or a failed record save can then never keep a revoked session alive.
+        $refresh->handle($identity, $firebaseUser);
+
         $record = $identity->getRelationValue('authenticatable');
 
         if (! $record instanceof Model || ! $record instanceof Authenticatable) {
             return;
         }
 
-        $sync->handle($record, $firebaseUser);
+        try {
+            $sync->handle($record, $firebaseUser);
+        } catch (QueryException $exception) {
+            // For example, another app gave the Firebase account an email that another local record holds.
+            app(LoggerInterface::class)->warning('The session check could not save the local record. The link is up to date.', [
+                'uid' => $identity->firebase_uid,
+                'exception' => $exception::class,
+            ]);
+        }
     }
 
     /**

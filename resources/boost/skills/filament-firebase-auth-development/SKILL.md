@@ -148,7 +148,8 @@ $this->app->bind(CreatesLocalUsers::class, CreateAdminRecord::class);
 The plugin replaces Filament's `make:filament-user`. On a Firebase panel, it finds or creates the Firebase account, then creates the local record through `CreatesLocalUsers` and the link.
 
 ```bash
-php artisan make:filament-user --panel=admin --name="Ada Admin" --email=ada@example.com --password=secret-password
+php artisan make:filament-user --panel=admin --name="Ada Admin" --email=ada@example.com
+# The command asks for the password. Do not pass --password on the command line: the shell history keeps it.
 ```
 
 ## Do and Don't
@@ -166,7 +167,7 @@ Don't:
 - Don't call `Hash::make()` on a password, and don't store a password or a hash locally. Firebase keeps the password.
 - Don't call `Kreait\Firebase\Contract\Auth` directly for flows that the plugin covers (sign-in, registration, password change, email change, reset, deletion). Use the plugin actions.
 - Don't use `delete_accounts = orphaned` when other apps share the Firebase project. The plugin cannot see the links of other apps, so it deletes accounts that they still use.
-- Don't create Filament users with `Model::create()`. Use `make:filament-user`, or the `FindOrCreateFirebaseUser` and `LinkFirebaseIdentity` actions with `CreatesLocalUsers`.
+- Don't create Filament users with `Model::create()`. Use `make:filament-user`, or copy the "Give a record a Firebase account in host code" sample in the reference. It mirrors `MakeFirebaseUserCommand`: `FindOrCreateFirebaseUser`, the checks of an existing account, `CreatesLocalUsers` and `LinkFirebaseIdentity` in one transaction, and `DeleteFirebaseUser` for an account that the call created when the local step fails.
 - Don't use Filament's own `Register`, `EditProfile` or app authentication classes, or Filament's own required multi-factor middleware, on a Firebase panel.
 - Don't add custom static methods, static properties or class constants in extensions. Use instance methods, Eloquent scopes and classes from the container.
 - Don't show different error messages for a wrong password, an unknown email or a closed panel. The plugin shows Filament's own failure message for all of them.

@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Str;
 use Symfony\Component\Yaml\Yaml;
@@ -72,8 +73,42 @@ it('names only symbols that exist', function () {
         ->and($missing)->toBe([]);
 });
 
+/**
+ * The config keys in the first column of the "Config keys" table of the reference guide.
+ *
+ * @return list<string>
+ */
+function boostGuideConfigKeys(): array
+{
+    $guide = (string) file_get_contents(dirname(__DIR__, 2) . '/resources/boost/skills/filament-firebase-auth-development/references/filament-firebase-auth-guide.md');
+    $section = Str::before(Str::after($guide, "\n## Config keys\n"), "\n## ");
+    $keys = [];
+
+    foreach (explode("\n", $section) as $line) {
+        // A table row: `| key | default | meaning |`. The header and the separator have no backticks in the first cell.
+        if (! str_starts_with($line, '|')) {
+            continue;
+        }
+
+        $firstCell = explode('|', $line)[1];
+
+        preg_match_all('/`([a-z_]+(?:\.[a-z_]+)*)`/', $firstCell, $matches);
+
+        array_push($keys, ...$matches[1]);
+    }
+
+    return array_values(array_unique($keys));
+}
+
 it('names only config keys that exist', function () {
+    $keys = boostGuideConfigKeys();
     $missing = [];
+
+    foreach ($keys as $key) {
+        if (! config()->has("filament-firebase-auth.{$key}")) {
+            $missing[] = "guide table: {$key}";
+        }
+    }
 
     foreach (boostFiles() as $path => $content) {
         preg_match_all('/filament-firebase-auth\.([a-z_]+(?:\.[a-z_]+)*)/', $content, $matches);
@@ -84,11 +119,21 @@ it('names only config keys that exist', function () {
                 continue;
             }
 
+            $keys[] = $key;
+
             if (! config()->has("filament-firebase-auth.{$key}")) {
                 $missing[] = basename($path) . ': ' . $key;
             }
         }
     }
 
-    expect($missing)->toBe([]);
+    expect($keys)->not->toBeEmpty()
+        ->and($missing)->toBe([]);
+});
+
+it('documents every config key in the guide table', function () {
+    $documented = boostGuideConfigKeys();
+    $config = require dirname(__DIR__, 2) . '/config/filament-firebase-auth.php';
+
+    expect($documented)->toEqualCanonicalizing(array_keys(Arr::dot($config)));
 });

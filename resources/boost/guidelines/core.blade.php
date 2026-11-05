@@ -20,6 +20,7 @@ $panel
     ->login()
     ->registration(Register::class)
     ->profile(EditProfile::class)
+    ->passwordReset()
     ->plugin(FilamentFirebaseAuthPlugin::make());
 </code-snippet>
 @endverbatim

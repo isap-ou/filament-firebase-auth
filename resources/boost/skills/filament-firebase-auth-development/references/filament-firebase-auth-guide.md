@@ -1,6 +1,6 @@
 # Filament Firebase Auth Reference
 
-Complete reference for `isapp/filament-firebase-auth` (Filament 5, Laravel 12 or 13, PHP 8.3+). Source: https://github.com/isap-ou/filament-firebase-auth
+Complete reference for `isapp/filament-firebase-auth` (Filament 5, Laravel 12.69.3+ or 13.33+, PHP 8.3+; see `composer.json` for the exact constraints). Source: https://github.com/isap-ou/filament-firebase-auth
 
 The plugin major version follows the Filament major version: plugin `5.x` works with Filament `5.x`.
 
@@ -255,7 +255,7 @@ The service provider binds the defaults with `bindIf()`. Bind your own class in 
 
 ### CreatesLocalUsers
 
-`Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers`. Default: `Isapp\FilamentFirebaseAuth\Actions\LocalUsers\CreateLocalUser` (sets `name` from the Firebase display name or the email, and `email`).
+`Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers`. Default: `Isapp\FilamentFirebaseAuth\Actions\LocalUsers\CreateLocalUser` (sets `name` from the Firebase display name, or from the part of the email before `@`, and sets `email`).
 
 ```php
 public function handle(UserRecord $firebaseUser, string $model, ?Panel $panel): Model & Authenticatable;
@@ -274,7 +274,9 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\RefreshFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
+use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Kreait\Firebase\Auth\UserRecord;
+use LogicException;
 
 class SyncAdminRecord implements SyncsLocalUsers
 {
@@ -282,10 +284,27 @@ class SyncAdminRecord implements SyncsLocalUsers
 
     public function handle(Model & Authenticatable $user, UserRecord $firebaseUser): void
     {
-        $user->forceFill(['email' => (string) $firebaseUser->email])->save();
+        // Only the owner of the link may write to the record. The default `SyncLocalUser` has the same guard.
+        if (! $user->exists) {
+            throw new LogicException('Only a saved record can be synced.');
+        }
+
+        $identity = $user->getRelationValue('firebaseIdentity');
+
+        if (! $identity instanceof FirebaseIdentity) {
+            throw new LogicException('The record has no link to a Firebase user.');
+        }
+
+        if ($identity->firebase_uid !== $firebaseUser->uid) {
+            throw new LogicException('The record is linked to another Firebase user.');
+        }
+
+        if ($firebaseUser->email !== null) {
+            $user->forceFill(['email' => $firebaseUser->email])->save();
+        }
 
         // Required: session invalidation reads these link columns.
-        $this->refreshFirebaseIdentity->handle($user->firebaseIdentity, $firebaseUser);
+        $this->refreshFirebaseIdentity->handle($identity, $firebaseUser);
     }
 }
 ```
@@ -369,7 +388,7 @@ The plugin fires no events of its own. Laravel and Filament events keep firing: 
 | Command | What it does |
 |---|---|
 | `php artisan filament-firebase-auth:install` | Publishes the config file and the migration. |
-| `php artisan make:filament-user` (aliases `filament:make-user`, `filament:user`) | Replaces Filament's command. Options: `--name`, `--email`, `--password`, `--panel`. |
+| `php artisan make:filament-user` (aliases `filament:make-user`, `filament:user`) | Replaces Filament's command. Options: `--name`, `--email`, `--password`, `--panel`. Omit `--password`: the command then asks for it, and the shell history does not keep it. |
 
 On a Firebase panel, `make:filament-user`:
 
@@ -454,14 +473,25 @@ Warning: use `orphaned` only when this app is the only user of the Firebase proj
 
 ### Give a record a Firebase account in host code
 
+The reference implementation is `Isapp\FilamentFirebaseAuth\Commands\MakeFirebaseUserCommand` (`createUser()`). Copy its order:
+
+1. Find or create the Firebase account.
+2. Refuse an existing account that is disabled, has an unverified email, or is linked to another record of the model. Do this before `CreatesLocalUsers` runs, because a host action can send mail or start jobs.
+3. Create the record and the link in one transaction.
+4. When the local step fails and this call created the account, delete the account, then rethrow.
+
 ```php
 use App\Models\Admin;
 use Filament\Facades\Filament;
 use Illuminate\Support\Facades\DB;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\DeleteFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindOrCreateFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\LinkFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
+use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
+use Kreait\Firebase\Auth\UserRecord;
 use RuntimeException;
+use Throwable;
 
 class InviteAdmin
 {
@@ -469,26 +499,52 @@ class InviteAdmin
         protected FindOrCreateFirebaseUser $findOrCreateFirebaseUser,
         protected CreatesLocalUsers $createsLocalUsers,
         protected LinkFirebaseIdentity $linkFirebaseIdentity,
+        protected DeleteFirebaseUser $deleteFirebaseUser,
     ) {}
 
     public function handle(string $email, string $password, string $name): Admin
     {
         [$firebaseUser, $created] = $this->findOrCreateFirebaseUser->handle($email, $password, $name, verified: true);
 
-        if (! $created && ! $firebaseUser->emailVerified) {
-            throw new RuntimeException('The existing Firebase account has an unverified email.');
+        if (! $created) {
+            $this->ensureExistingAccountLinkable($firebaseUser);
         }
 
-        return DB::transaction(function () use ($firebaseUser): Admin {
-            $admin = $this->createsLocalUsers->handle($firebaseUser, Admin::class, Filament::getPanel('admin'));
+        try {
+            return DB::transaction(function () use ($firebaseUser): Admin {
+                $admin = $this->createsLocalUsers->handle($firebaseUser, Admin::class, Filament::getPanel('admin'));
 
-            $this->linkFirebaseIdentity->handle($admin, $firebaseUser);
+                $this->linkFirebaseIdentity->handle($admin, $firebaseUser);
 
-            return $admin;
-        });
+                return $admin;
+            });
+        } catch (Throwable $exception) {
+            // Delete only an account that this call created. An existing account belongs to someone.
+            if ($created) {
+                $this->deleteFirebaseUser->handle($firebaseUser->uid);
+            }
+
+            throw $exception;
+        }
+    }
+
+    protected function ensureExistingAccountLinkable(UserRecord $firebaseUser): void
+    {
+        $error = match (true) {
+            $firebaseUser->disabled => 'The existing Firebase account is disabled.',
+            ! $firebaseUser->emailVerified => 'The existing Firebase account has an unverified email.',
+            FirebaseIdentity::query()->forFirebaseUid($firebaseUser->uid, (new Admin)->getMorphClass())->exists() => 'Another admin is linked to the existing Firebase account.',
+            default => null,
+        };
+
+        if ($error !== null) {
+            throw new RuntimeException($error);
+        }
     }
 }
 ```
+
+The command also logs a failed cleanup deletion and names the UID, so that an admin can delete the account by hand. Add the same handling when the cleanup must never hide the first error.
 
 ## Limitations
 

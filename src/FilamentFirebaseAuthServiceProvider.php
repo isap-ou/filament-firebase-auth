@@ -10,6 +10,7 @@ use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUserByEmail;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\CreateLocalUser;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\SyncLocalUser;
 use Isapp\FilamentFirebaseAuth\Auth\FirebaseUserProvider;
+use Isapp\FilamentFirebaseAuth\Commands\MakeFirebaseUserCommand;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
 use Isapp\FilamentFirebaseAuth\Contracts\DecidesAccountDeletion;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
@@ -42,6 +43,7 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
     public function packageBooted(): void
     {
         $this->registerUserProvider();
+        $this->registerCommands();
     }
 
     /**
@@ -69,5 +71,17 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
             $app->make('hash'),
             $config['model'],
         ));
+    }
+
+    /**
+     * Replaces Filament's `make:filament-user` command and its aliases.
+     *
+     * The command has no `#[AsCommand]` attribute, so Artisan adds it as an object. An added object
+     * wins over a lazy command with the same name, whichever provider registers first. The callback
+     * runs after all providers booted, so the plugin command is also added after an eager Filament command.
+     */
+    private function registerCommands(): void
+    {
+        $this->app->booted(fn () => $this->commands([MakeFirebaseUserCommand::class]));
     }
 }

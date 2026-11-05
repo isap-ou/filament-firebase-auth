@@ -9,14 +9,16 @@ use Kreait\Firebase\Exception\Auth\UserNotFound;
 /**
  * Reads a Firebase user by email.
  *
- * The container keeps one instance per request, so each email is read once per request.
+ * The container keeps one instance per request, so each found email is read once per request.
+ * An unknown email is not remembered, because an account created later in the same request
+ * (for example by `CreateFirebaseUser`) must be found by the next lookup.
  */
 class FindFirebaseUserByEmail
 {
     /**
-     * Firebase users by email. Null means that Firebase has no user with this email.
+     * The found Firebase users by email.
      *
-     * @var array<string, UserRecord|null>
+     * @var array<string, UserRecord>
      */
     protected array $users = [];
 
@@ -25,21 +27,19 @@ class FindFirebaseUserByEmail
     /**
      * Returns the Firebase user, or null when Firebase has no user with this email.
      *
-     * Other Firebase exceptions go to the caller. An exception is not remembered,
-     * so the next call asks Firebase again.
+     * Other Firebase exceptions go to the caller. Only a found user is remembered,
+     * so after an unknown email or an exception the next call asks Firebase again.
      */
     public function handle(string $email): ?UserRecord
     {
-        if (array_key_exists($email, $this->users)) {
+        if (isset($this->users[$email])) {
             return $this->users[$email];
         }
 
         try {
-            $user = $this->auth->getUserByEmail($email);
+            return $this->users[$email] = $this->auth->getUserByEmail($email);
         } catch (UserNotFound) {
-            $user = null;
+            return null;
         }
-
-        return $this->users[$email] = $user;
     }
 }

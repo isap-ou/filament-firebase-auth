@@ -2,10 +2,13 @@
 
 namespace Isapp\FilamentFirebaseAuth;
 
+use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Support\Facades\Auth;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\CheckFirebasePassword;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\CreateLocalUser;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\SyncLocalUser;
+use Isapp\FilamentFirebaseAuth\Auth\FirebaseUserProvider;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
 use Isapp\FilamentFirebaseAuth\Contracts\DecidesAccountDeletion;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
@@ -35,6 +38,11 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
         $this->registerActions();
     }
 
+    public function packageBooted(): void
+    {
+        $this->registerUserProvider();
+    }
+
     /**
      * Binds the default local user actions and the default deletion policy.
      * A host app can bind its own classes to the three contracts.
@@ -47,5 +55,17 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
         $this->app->bindIf(DecidesAccountDeletion::class, AccountDeletionPolicy::class);
         $this->app->scoped(FindFirebaseUser::class);
         $this->app->scoped(CheckFirebasePassword::class);
+    }
+
+    /**
+     * Registers the `firebase` user provider driver. It reads the model from the provider config,
+     * the way Laravel's `eloquent` driver does.
+     */
+    private function registerUserProvider(): void
+    {
+        Auth::provider('firebase', fn (Application $app, array $config): FirebaseUserProvider => new FirebaseUserProvider(
+            $app->make('hash'),
+            $config['model'],
+        ));
     }
 }

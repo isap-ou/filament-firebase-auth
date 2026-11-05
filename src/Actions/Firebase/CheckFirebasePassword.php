@@ -5,6 +5,7 @@ namespace Isapp\FilamentFirebaseAuth\Actions\Firebase;
 use Kreait\Firebase\Auth\SignIn\FailedToSignIn;
 use Kreait\Firebase\Auth\UserRecord;
 use Kreait\Firebase\Contract\Auth;
+use Psr\Log\LoggerInterface;
 use SensitiveParameter;
 
 /**
@@ -25,6 +26,7 @@ class CheckFirebasePassword
     public function __construct(
         protected Auth $auth,
         protected FindFirebaseUser $findFirebaseUser,
+        protected LoggerInterface $logger,
     ) {}
 
     /**
@@ -52,9 +54,30 @@ class CheckFirebasePassword
                 throw $exception;
             }
 
+            $this->logConfigurationError($exception);
+
             $uid = null;
         }
 
         return $this->results[$key] = $uid === null ? null : $this->findFirebaseUser->handle($uid);
+    }
+
+    /**
+     * Firebase also answers with a 4xx status when the project refuses the request, for example
+     * `OPERATION_NOT_ALLOWED` or `TOO_MANY_ATTEMPTS_TRY_LATER`. The user still sees the generic
+     * message. The log names the Firebase error code only, never the email or the password.
+     */
+    protected function logConfigurationError(FailedToSignIn $exception): void
+    {
+        // Firebase writes the message as "CODE" or "CODE : description".
+        $code = trim(explode(' : ', $exception->getMessage(), 2)[0]);
+
+        $credentialCodes = ['EMAIL_NOT_FOUND', 'INVALID_PASSWORD', 'INVALID_LOGIN_CREDENTIALS', 'USER_DISABLED', 'INVALID_EMAIL', 'MISSING_PASSWORD'];
+
+        if (in_array($code, $credentialCodes, true)) {
+            return;
+        }
+
+        $this->logger->warning('Firebase refused the password check because of its configuration.', ['code' => $code]);
     }
 }

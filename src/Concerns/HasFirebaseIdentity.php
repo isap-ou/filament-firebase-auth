@@ -6,10 +6,14 @@ use Illuminate\Auth\Notifications\VerifyEmail;
 use Illuminate\Auth\Passwords\CanResetPassword;
 use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Illuminate\Support\Str;
+use Isapp\FilamentFirebaseAuth\Actions\Accounts\DeleteFirebaseUserIfAllowed;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\DetectPasswordProvider;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\SetFirebaseEmailVerified;
+use Isapp\FilamentFirebaseAuth\Enums\DeleteAccounts;
+use Isapp\FilamentFirebaseAuth\Enums\DeletionReason;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
+use Throwable;
 
 /**
  * Connects a host model to its Firebase user through the link table.
@@ -50,6 +54,15 @@ trait HasFirebaseIdentity
             }
 
             $model->setRawAttributes($attributes);
+        });
+
+        static::deleted(function (self $model): void {
+            // A soft delete keeps the link. `SoftDeletes::forceDelete()` fires `deleted` too.
+            if (method_exists($model, 'isForceDeleting') && ! $model->isForceDeleting()) {
+                return;
+            }
+
+            $model->deleteFirebaseIdentity();
         });
     }
 
@@ -142,6 +155,48 @@ trait HasFirebaseIdentity
     public function rotateSessionSalt(): void
     {
         $this->firebaseIdentity?->update(['session_salt' => Str::random(64)]);
+    }
+
+    /**
+     * Deletes the link of a deleted record, then runs the deletion policy for its Firebase user.
+     *
+     * In `never` mode the plugin does not call Firebase. An unknown `delete_accounts` value throws.
+     * The Firebase part runs after the open transaction commits, so a rollback never loses the
+     * Firebase account. A failure in the Firebase part never stops the deletion of the local record.
+     * The plugin logs the UID and the exception class, and goes on.
+     */
+    protected function deleteFirebaseIdentity(): void
+    {
+        $identity = $this->firebaseIdentity()->first();
+
+        if ($identity === null) {
+            return;
+        }
+
+        $uid = $identity->firebase_uid;
+
+        $identity->delete();
+        $this->unsetRelation('firebaseIdentity');
+
+        if (DeleteAccounts::from(config()->string('filament-firebase-auth.delete_accounts')) === DeleteAccounts::Never) {
+            return;
+        }
+
+        // Without an open transaction, Laravel runs the callback at once.
+        $this->getConnection()->afterCommit(function () use ($uid): void {
+            try {
+                $firebaseUser = app(FindFirebaseUser::class)->handle($uid);
+
+                if ($firebaseUser !== null) {
+                    app(DeleteFirebaseUserIfAllowed::class)->handle($firebaseUser, DeletionReason::RecordDeleted);
+                }
+            } catch (Throwable $exception) {
+                logger()->warning('The Firebase part of a record deletion failed.', [
+                    'uid' => $uid,
+                    'exception' => $exception::class,
+                ]);
+            }
+        });
     }
 
     protected function setFirebaseEmailVerified(bool $verified): bool

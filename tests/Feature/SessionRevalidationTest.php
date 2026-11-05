@@ -150,6 +150,39 @@ it('stores revoked tokens time when the record cannot be saved', function () {
     );
 });
 
+it('does not raise the verified flag when the record keeps another email', function () {
+    // The save fails, so the local record keeps the old email. A verified Firebase email does not prove it.
+    User::query()->create(['name' => 'John', 'email' => 'taken@example.com']);
+    $user = linkedUser(verified: false);
+    $revokedAt = now()->addMinute()->startOfSecond();
+    mockFirebase()->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord([
+        'email' => 'taken@example.com',
+        'emailVerified' => true,
+        'validSince' => (string) $revokedAt->getTimestamp(),
+    ]));
+
+    sessionCheckRunJob($user);
+
+    $user->refresh();
+    expect($user->firebaseIdentity?->tokens_valid_after?->getTimestamp())->toBe($revokedAt->getTimestamp())
+        ->and($user->firebaseIdentity?->email_verified_at)->toBeNull()
+        ->and($user->getAttribute('email'))->toBe('jane@example.com');
+});
+
+it('raises the verified flag after the record takes the new firebase email', function () {
+    $user = linkedUser(verified: false);
+    mockFirebase()->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord([
+        'email' => 'jane.doe@example.com',
+        'emailVerified' => true,
+    ]));
+
+    sessionCheckRunJob($user);
+
+    $user->refresh();
+    expect($user->getAttribute('email'))->toBe('jane.doe@example.com')
+        ->and($user->firebaseIdentity?->email_verified_at)->not->toBeNull();
+});
+
 it('stores revoked tokens time when a host sync class does not refresh the link', function () {
     app()->bind(SyncsLocalUsers::class, fn () => new class implements SyncsLocalUsers
     {

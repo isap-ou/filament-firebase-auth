@@ -107,6 +107,18 @@ it('refreshes the link before a record save that fails', function () {
     expect($user->firebaseIdentity?->fresh()?->tokens_valid_after?->getTimestamp())->toBe(1700000000);
 });
 
+it('does not raise the verified flag when the record save fails', function () {
+    User::query()->create(['name' => 'John', 'email' => 'taken@example.com']);
+    $user = linkedUser(verified: false);
+
+    expect(fn () => app(SyncsLocalUsers::class)->handle($user, userRecord([
+        'email' => 'taken@example.com',
+        'emailVerified' => true,
+    ])))->toThrow(QueryException::class);
+
+    expect($user->firebaseIdentity?->fresh()?->email_verified_at)->toBeNull();
+});
+
 it('keeps other database errors as they are', function () {
     app(CreatesLocalUsers::class)->handle(userRecord(), User::class, null);
 

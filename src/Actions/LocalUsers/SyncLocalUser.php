@@ -15,6 +15,7 @@ use LogicException;
  *
  * The link holds the session state (revoked tokens, a disabled account). It is written first, so a
  * failed record save (for example an email that another record holds) never stops the session check.
+ * The verified flag rises only for the email that the record holds, so it waits for a successful save.
  */
 class SyncLocalUser implements SyncsLocalUsers
 {
@@ -40,7 +41,8 @@ class SyncLocalUser implements SyncsLocalUsers
             throw new LogicException('The record is linked to another Firebase user.');
         }
 
-        $this->refreshFirebaseIdentity->handle($identity, $firebaseUser);
+        // The record still holds its old email here. The verified flag follows only after the save.
+        $this->refreshFirebaseIdentity->handle($identity, $firebaseUser, (string) $user->getAttribute('email'));
 
         if ($firebaseUser->displayName !== null) {
             $user->setAttribute('name', $firebaseUser->displayName);
@@ -50,8 +52,16 @@ class SyncLocalUser implements SyncsLocalUsers
             $user->setAttribute('email', $firebaseUser->email);
         }
 
-        if ($user->isDirty(['name', 'email'])) {
-            $user->save();
+        if (! $user->isDirty(['name', 'email'])) {
+            return;
+        }
+
+        $emailChanged = $user->isDirty('email');
+
+        $user->save();
+
+        if ($emailChanged) {
+            $this->refreshFirebaseIdentity->handle($identity, $firebaseUser, (string) $user->getAttribute('email'));
         }
     }
 }

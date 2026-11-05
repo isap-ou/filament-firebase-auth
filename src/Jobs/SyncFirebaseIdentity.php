@@ -56,19 +56,15 @@ class SyncFirebaseIdentity implements ShouldQueue
             return;
         }
 
-        if ($firebaseUser->disabled) {
-            // The record is not synced. RefreshFirebaseIdentity sets the mark of a disabled user.
-            $refresh->handle($identity, $firebaseUser);
-
-            return;
-        }
-
-        // The link state goes first. A host sync class or a failed record save can then never keep a revoked session alive.
-        $refresh->handle($identity, $firebaseUser);
-
         $record = $identity->getRelationValue('authenticatable');
+        $isRecord = $record instanceof Model && $record instanceof Authenticatable;
 
-        if (! $record instanceof Model || ! $record instanceof Authenticatable) {
+        // The link state goes first. A host sync class or a failed record save can then never keep a revoked
+        // session alive. The verified flag rises only for the email that the record holds now.
+        $refresh->handle($identity, $firebaseUser, $isRecord ? (string) $record->getAttribute('email') : '');
+
+        // The record of a disabled user is not synced. RefreshFirebaseIdentity sets the mark.
+        if ($firebaseUser->disabled || ! $isRecord) {
             return;
         }
 

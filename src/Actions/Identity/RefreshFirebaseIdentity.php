@@ -16,12 +16,25 @@ use Kreait\Firebase\Auth\UserRecord;
  */
 class RefreshFirebaseIdentity
 {
-    public function handle(FirebaseIdentity $identity, UserRecord $firebaseUser): void
+    /**
+     * Pass `$localEmail` when the record can hold another email than Firebase, for example before
+     * its save. A verified Firebase email then raises `email_verified_at` only when the two emails
+     * are the same, compared without case. An unverified Firebase email always clears the flag.
+     */
+    public function handle(FirebaseIdentity $identity, UserRecord $firebaseUser, ?string $localEmail = null): void
     {
         $now = $identity->freshTimestamp();
 
+        $provesLocalEmail = $localEmail === null
+            || ($firebaseUser->email !== null && mb_strtolower($firebaseUser->email) === mb_strtolower($localEmail));
+
         $identity->forceFill([
-            'email_verified_at' => $firebaseUser->emailVerified ? ($identity->email_verified_at ?? $now) : null,
+            'email_verified_at' => match (true) {
+                ! $firebaseUser->emailVerified => null,
+                $provesLocalEmail => $identity->email_verified_at ?? $now,
+                // The Firebase email is verified, but it is not the local email. Keep the earlier value.
+                default => $identity->email_verified_at,
+            },
             'synced_at' => $now,
             'tokens_valid_after' => $firebaseUser->tokensValidAfterTime,
             // Firebase returns disabled users too. Only an enabled account clears the mark.

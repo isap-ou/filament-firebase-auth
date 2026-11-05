@@ -17,6 +17,8 @@ use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
 use Isapp\FilamentFirebaseAuth\Enums\SocialProvider;
 use Isapp\FilamentFirebaseAuth\FilamentFirebaseAuthPlugin;
+use Isapp\FilamentFirebaseAuth\Http\Middleware\EnsureMultiFactorAuthenticationIsEnabled;
+use Isapp\FilamentFirebaseAuth\MultiFactor\AppAuthentication;
 use Isapp\FilamentFirebaseAuth\Pages\EditProfile;
 use Isapp\FilamentFirebaseAuth\Pages\Register;
 
@@ -38,6 +40,8 @@ class AppPanelProvider extends PanelProvider
             ->emailVerification()
             ->emailChangeVerification()
             ->passwordReset()
+            ->multiFactorAuthentication([AppAuthentication::make()], isRequired: false)
+            ->multiFactorAuthenticationRequiredMiddlewareName(EnsureMultiFactorAuthenticationIsEnabled::class)
             ->plugin(
                 FilamentFirebaseAuthPlugin::make()
                     ->createOnSignIn(true)

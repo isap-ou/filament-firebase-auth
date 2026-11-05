@@ -6,10 +6,13 @@ use Illuminate\Auth\Notifications\VerifyEmail;
 use Illuminate\Auth\Passwords\CanResetPassword;
 use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Illuminate\Support\Str;
+use Isapp\FilamentFirebaseAuth\Actions\Accounts\DeleteFirebaseUserIfAllowed;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\DetectPasswordProvider;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\SetFirebaseEmailVerified;
+use Isapp\FilamentFirebaseAuth\Enums\DeletionReason;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
+use Kreait\Firebase\Exception\FirebaseException;
 
 /**
  * Connects a host model to its Firebase user through the link table.
@@ -50,6 +53,15 @@ trait HasFirebaseIdentity
             }
 
             $model->setRawAttributes($attributes);
+        });
+
+        static::deleted(function (self $model): void {
+            // A soft delete keeps the link. `SoftDeletes::forceDelete()` fires `deleted` too.
+            if (method_exists($model, 'isForceDeleting') && ! $model->isForceDeleting()) {
+                return;
+            }
+
+            $model->deleteFirebaseIdentity();
         });
     }
 
@@ -142,6 +154,36 @@ trait HasFirebaseIdentity
     public function rotateSessionSalt(): void
     {
         $this->firebaseIdentity?->update(['session_salt' => Str::random(64)]);
+    }
+
+    /**
+     * Deletes the link of a deleted record, then runs the deletion policy for its Firebase user.
+     *
+     * A Firebase failure never stops the deletion of the local record. The plugin logs the UID
+     * and goes on.
+     */
+    protected function deleteFirebaseIdentity(): void
+    {
+        $identity = $this->firebaseIdentity()->first();
+
+        if ($identity === null) {
+            return;
+        }
+
+        $uid = $identity->firebase_uid;
+
+        $identity->delete();
+        $this->unsetRelation('firebaseIdentity');
+
+        try {
+            $firebaseUser = app(FindFirebaseUser::class)->handle($uid);
+
+            if ($firebaseUser !== null) {
+                app(DeleteFirebaseUserIfAllowed::class)->handle($firebaseUser, DeletionReason::RecordDeleted);
+            }
+        } catch (FirebaseException) {
+            logger()->warning('The Firebase account of a deleted record was not checked: Firebase failed.', ['uid' => $uid]);
+        }
     }
 
     protected function setFirebaseEmailVerified(bool $verified): bool

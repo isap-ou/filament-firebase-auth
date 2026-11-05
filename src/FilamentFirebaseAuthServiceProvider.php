@@ -7,7 +7,9 @@ use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\CreateLocalUser;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\SyncLocalUser;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
+use Isapp\FilamentFirebaseAuth\Contracts\DecidesAccountDeletion;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
+use Isapp\FilamentFirebaseAuth\Deletion\AccountDeletionPolicy;
 use Spatie\LaravelPackageTools\Commands\InstallCommand;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
@@ -34,13 +36,15 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
     }
 
     /**
-     * Binds the default local user actions. A host app can bind its own classes to the two contracts.
+     * Binds the default local user actions and the default deletion policy.
+     * A host app can bind its own classes to the three contracts.
      * The two Firebase read actions remember their answers, so the container keeps one instance per request.
      */
     private function registerActions(): void
     {
         $this->app->bindIf(CreatesLocalUsers::class, CreateLocalUser::class);
         $this->app->bindIf(SyncsLocalUsers::class, SyncLocalUser::class);
+        $this->app->bindIf(DecidesAccountDeletion::class, AccountDeletionPolicy::class);
         $this->app->scoped(FindFirebaseUser::class);
         $this->app->scoped(CheckFirebasePassword::class);
     }

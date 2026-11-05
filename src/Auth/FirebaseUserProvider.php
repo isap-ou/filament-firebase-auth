@@ -2,12 +2,13 @@
 
 namespace Isapp\FilamentFirebaseAuth\Auth;
 
-use Filament\Exceptions\NoDefaultPanelSetException;
 use Filament\FilamentManager;
 use Filament\Panel;
 use Illuminate\Auth\EloquentUserProvider;
+use Illuminate\Auth\SessionGuard;
 use Illuminate\Config\Repository;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Contracts\Auth\Factory as AuthFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
 use Isapp\FilamentFirebaseAuth\Actions\Accounts\DeleteFirebaseUserIfAllowed;
@@ -31,6 +32,11 @@ use SensitiveParameter;
  *
  * Laravel keeps one provider instance per guard, also across requests in a long-lived worker.
  * So the provider keeps no state and resolves every action from the container at call time.
+ *
+ * The provider reads the plugin settings only from the current panel, and only when the guard
+ * of that panel uses this provider instance. Outside such a panel (for example
+ * `Auth::guard('admin')->attempt()` in host code, or a request of another panel), the provider
+ * never creates a record, gives no panel to `CreatesLocalUsers` and never deletes an account.
  */
 class FirebaseUserProvider extends EloquentUserProvider
 {
@@ -38,12 +44,15 @@ class FirebaseUserProvider extends EloquentUserProvider
      * Finds the Firebase user by email and resolves the local record. It never writes.
      *
      * A new record comes back unsaved. `validateCredentials()` saves it after the password check.
-     * A blocked sign-in returns null. On a closed panel, the deletion policy may then delete
-     * the Firebase account, but only after Firebase proved the password.
+     * An unknown email or a blocked sign-in returns null. The password check still runs, so every
+     * attempt makes the same number of Firebase calls and takes about the same time.
+     * On a closed panel, the deletion policy may then delete the Firebase account,
+     * but only after Firebase proved the password.
      */
     public function retrieveByCredentials(#[SensitiveParameter] array $credentials): ?Authenticatable
     {
         $email = $credentials['email'] ?? null;
+        $password = $credentials['password'] ?? null;
 
         if (! is_string($email) || $email === '') {
             return null;
@@ -53,14 +62,21 @@ class FirebaseUserProvider extends EloquentUserProvider
             $firebaseUser = app(FindFirebaseUserByEmail::class)->handle($email);
 
             if (! $firebaseUser instanceof UserRecord) {
+                $this->checkPassword($email, $password);
+
                 return null;
             }
 
-            $createOnSignIn = $this->shouldCreateOnSignIn();
+            $panel = $this->panel();
+            $createOnSignIn = $this->shouldCreateOnSignIn($panel);
             $resolved = app(ResolveLocalUser::class)->handle($firebaseUser, $this->getModel(), $createOnSignIn);
 
             if ($resolved->resolution === Resolution::Blocked) {
-                $this->deleteIfBlockedOnClosedPanel($firebaseUser, $createOnSignIn, $email, $credentials['password'] ?? null);
+                $proven = $this->checkPassword($email, $password);
+
+                if ($panel instanceof Panel && ! $createOnSignIn && $proven instanceof UserRecord) {
+                    $this->deleteIfBlockedOnClosedPanel($firebaseUser, $proven);
+                }
 
                 return null;
             }
@@ -96,7 +112,8 @@ class FirebaseUserProvider extends EloquentUserProvider
             }
 
             // The provider keeps no state, so it resolves the record again. The given record must be that record.
-            $resolved = app(ResolveLocalUser::class)->handle($firebaseUser, $this->getModel(), $this->shouldCreateOnSignIn());
+            $panel = $this->panel();
+            $resolved = app(ResolveLocalUser::class)->handle($firebaseUser, $this->getModel(), $this->shouldCreateOnSignIn($panel));
 
             if (! $this->isResolvedRecord($user, $resolved)) {
                 return false;
@@ -105,7 +122,7 @@ class FirebaseUserProvider extends EloquentUserProvider
             $saved = app(PersistResolvedUser::class)->handle(
                 new ResolvedUser($resolved->resolution, $user),
                 $firebaseUser,
-                $this->panel(),
+                $panel,
             );
         } catch (FirebaseException $exception) {
             $this->logFirebaseFailure($exception);
@@ -120,9 +137,7 @@ class FirebaseUserProvider extends EloquentUserProvider
 
             return false;
         } catch (LogicException $exception) {
-            // A configuration error, for example a NOT NULL password column. The plugin writes these
-            // messages. They name tables and columns, never personal data.
-            app(LoggerInterface::class)->error($exception->getMessage(), ['exception' => $exception::class]);
+            $this->logSaveFailure($exception);
 
             return false;
         }
@@ -138,12 +153,23 @@ class FirebaseUserProvider extends EloquentUserProvider
     public function rehashPasswordIfRequired(Authenticatable $user, #[SensitiveParameter] array $credentials, bool $force = false): void {}
 
     /**
-     * Runs the deletion policy only when a closed panel blocked a Firebase user without a record,
-     * and only after Firebase proved the password (Review Focus 1).
+     * Checks the password also when the sign-in fails anyway. Without it, an attempt for an email
+     * with a local record would make one more Firebase call than any other attempt, and the
+     * timing would show which emails have a record. `CheckFirebasePassword` remembers the
+     * answer, so `validateCredentials()` and the deletion path do not ask Firebase again.
      */
-    protected function deleteIfBlockedOnClosedPanel(UserRecord $firebaseUser, bool $createOnSignIn, string $email, mixed $password): void
+    protected function checkPassword(string $email, mixed $password): ?UserRecord
     {
-        if ($createOnSignIn || ! is_string($password) || $this->deleteAccounts() === DeleteAccounts::Never) {
+        return is_string($password) ? app(CheckFirebasePassword::class)->handle($email, $password) : null;
+    }
+
+    /**
+     * Runs the deletion policy only when a closed panel blocked a Firebase user without a record.
+     * The caller gives the Firebase user only after Firebase proved the password (Review Focus 1).
+     */
+    protected function deleteIfBlockedOnClosedPanel(UserRecord $firebaseUser, UserRecord $proven): void
+    {
+        if ($this->deleteAccounts() === DeleteAccounts::Never) {
             return;
         }
 
@@ -151,12 +177,6 @@ class FirebaseUserProvider extends EloquentUserProvider
         $resolution = app(ResolveLocalUser::class)->handle($firebaseUser, $this->getModel(), true)->resolution;
 
         if ($resolution !== Resolution::New) {
-            return;
-        }
-
-        $proven = app(CheckFirebasePassword::class)->handle($email, $password);
-
-        if (! $proven instanceof UserRecord) {
             return;
         }
 
@@ -196,25 +216,53 @@ class FirebaseUserProvider extends EloquentUserProvider
     }
 
     /**
-     * Outside a panel of the plugin, the provider never creates records.
+     * Without a panel of this provider, the provider never creates records.
+     * With a panel, `CurrentPlugin` reads the plugin of that panel, because it is the current panel.
      */
-    protected function shouldCreateOnSignIn(): bool
+    protected function shouldCreateOnSignIn(?Panel $panel): bool
     {
+        if (! $panel instanceof Panel) {
+            return false;
+        }
+
         return app(CurrentPlugin::class)->get()?->shouldCreateOnSignIn() ?? false;
     }
 
+    /**
+     * Returns the current panel when its guard uses this provider instance, or null.
+     * Laravel builds one provider instance per guard, so another guard never matches.
+     */
     protected function panel(): ?Panel
     {
-        try {
-            return app(FilamentManager::class)->getCurrentOrDefaultPanel();
-        } catch (NoDefaultPanelSetException) {
+        $panel = app(FilamentManager::class)->getCurrentPanel();
+
+        if (! $panel instanceof Panel) {
             return null;
         }
+
+        $guard = app(AuthFactory::class)->guard($panel->getAuthGuard());
+
+        return $guard instanceof SessionGuard && $guard->getProvider() === $this ? $panel : null;
     }
 
     protected function deleteAccounts(): DeleteAccounts
     {
         return DeleteAccounts::from(app(Repository::class)->string('filament-firebase-auth.delete_accounts'));
+    }
+
+    /**
+     * Logs the message only when plugin code created the exception. The plugin messages name
+     * tables and columns, for example the NOT NULL password column, never personal data.
+     * Host code (for example its own `CreatesLocalUsers`) may put personal data in a message,
+     * so its exceptions are logged with the class only.
+     */
+    protected function logSaveFailure(LogicException $exception): void
+    {
+        $message = str_starts_with($exception->getFile(), dirname(__DIR__) . DIRECTORY_SEPARATOR)
+            ? $exception->getMessage()
+            : 'The local record could not be saved after the password check.';
+
+        app(LoggerInterface::class)->error($message, ['exception' => $exception::class]);
     }
 
     /**

@@ -54,7 +54,7 @@ class CheckFirebasePassword
                 throw $exception;
             }
 
-            $this->logConfigurationError($exception);
+            $this->logRefusal($exception);
 
             $uid = null;
         }
@@ -63,11 +63,12 @@ class CheckFirebasePassword
     }
 
     /**
-     * Firebase also answers with a 4xx status when the project refuses the request, for example
-     * `OPERATION_NOT_ALLOWED` or `TOO_MANY_ATTEMPTS_TRY_LATER`. The user still sees the generic
-     * message. The log names the Firebase error code only, never the email or the password.
+     * Firebase also answers with a 4xx status for reasons other than wrong credentials, for example
+     * `OPERATION_NOT_ALLOWED` (a project setting) or `TOO_MANY_ATTEMPTS_TRY_LATER` (an account lockout).
+     * The user still sees the generic message. The log names the Firebase error code only,
+     * never the email or the password.
      */
-    protected function logConfigurationError(FailedToSignIn $exception): void
+    protected function logRefusal(FailedToSignIn $exception): void
     {
         // Firebase writes the message as "CODE" or "CODE : description".
         $code = trim(explode(' : ', $exception->getMessage(), 2)[0]);
@@ -78,6 +79,6 @@ class CheckFirebasePassword
             return;
         }
 
-        $this->logger->warning('Firebase refused the password check because of its configuration.', ['code' => $code]);
+        $this->logger->warning('Firebase refused the password check.', ['code' => $code]);
     }
 }

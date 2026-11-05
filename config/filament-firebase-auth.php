@@ -25,6 +25,18 @@ return [
     'revalidate_every' => 15,
 
     /*
+     * The queue for the session check job. Set null to run the job after the response
+     * in the same process.
+     */
+    'revalidate_queue' => null,
+
+    /*
+     * Show "Log out everywhere" on the profile page. It revokes the Firebase refresh tokens,
+     * so it also signs the person out of other apps on the same Firebase project.
+     */
+    'global_logout' => false,
+
+    /*
      * How the login page signs in with a social provider. "js_sdk" is the only value.
      */
     'social_sign_in' => 'js_sdk',

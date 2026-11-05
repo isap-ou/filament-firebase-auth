@@ -14,6 +14,9 @@ return new class extends Migration
             $table->morphs('authenticatable');
             $table->timestamp('email_verified_at')->nullable();
             $table->timestamp('synced_at')->nullable();
+            $table->timestamp('tokens_valid_after')->nullable();
+            $table->timestamp('invalidated_at')->nullable();
+            $table->string('session_salt', 64)->nullable();
             $table->timestamps();
 
             $table->unique(['authenticatable_type', 'firebase_uid']);

@@ -6,8 +6,10 @@ use Illuminate\Auth\Notifications\VerifyEmail;
 use Illuminate\Auth\Passwords\CanResetPassword;
 use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Illuminate\Support\Str;
+use Isapp\FilamentFirebaseAuth\Actions\DetectPasswordProvider;
+use Isapp\FilamentFirebaseAuth\Actions\FindFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Actions\SetFirebaseEmailVerified;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
-use Kreait\Firebase\Contract\Auth;
 
 /**
  * Connects a host model to its Firebase user through the link table.
@@ -94,6 +96,9 @@ trait HasFirebaseIdentity
 
     /**
      * Returns true when the Firebase user can sign in with an email and a password.
+     *
+     * A missing Firebase user has no password provider. Other Firebase exceptions go to the caller
+     * and are not remembered.
      */
     public function hasFirebasePasswordProvider(): bool
     {
@@ -107,15 +112,10 @@ trait HasFirebaseIdentity
             return false;
         }
 
-        $this->firebasePasswordProvider = false;
+        $firebaseUser = app(FindFirebaseUser::class)->handle($uid);
+        $hasPasswordProvider = $firebaseUser !== null && app(DetectPasswordProvider::class)->handle($firebaseUser);
 
-        foreach (app(Auth::class)->getUser($uid)->providerData as $provider) {
-            if ($provider->providerId === 'password') {
-                $this->firebasePasswordProvider = true;
-            }
-        }
-
-        return $this->firebasePasswordProvider;
+        return $this->firebasePasswordProvider = $hasPasswordProvider;
     }
 
     /**
@@ -152,7 +152,7 @@ trait HasFirebaseIdentity
             return false;
         }
 
-        app(Auth::class)->updateUser($identity->firebase_uid, ['emailVerified' => $verified]);
+        app(SetFirebaseEmailVerified::class)->handle($identity->firebase_uid, $verified);
 
         return $identity->forceFill([
             'email_verified_at' => $verified ? $identity->freshTimestamp() : null,

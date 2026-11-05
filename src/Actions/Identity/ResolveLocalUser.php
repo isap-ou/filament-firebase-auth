@@ -84,7 +84,7 @@ class ResolveLocalUser
         $query = $instance->newQuery()->whereKey($identity->authenticatable_id);
 
         if ($constraints instanceof Closure) {
-            $constraints($query);
+            $this->constrain($query, $constraints);
         }
 
         /** @var (Model&Authenticatable)|null $user */
@@ -125,9 +125,20 @@ class ResolveLocalUser
         }
 
         $query = $user->newQuery()->whereKey($user->getKey());
-        $constraints($query);
+        $this->constrain($query, $constraints);
 
         return $query->exists();
+    }
+
+    /**
+     * Adds the host conditions in a nested `where`. A top-level `orWhere` in them can then only narrow
+     * the key lookup, never return another record.
+     *
+     * @param  Builder<*>  $query
+     */
+    protected function constrain(Builder $query, Closure $constraints): void
+    {
+        $query->where(fn (Builder $nested) => $constraints($nested));
     }
 
     protected function blocked(): ResolvedUser

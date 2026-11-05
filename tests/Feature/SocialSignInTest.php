@@ -215,8 +215,9 @@ it('applies the query callback of the user provider', function () {
 });
 
 it('gives the session a new id and a new csrf token after a social sign-in', function () {
-    // A planted session must not survive the sign-in (session fixation). The guard gives a new ID.
-    // Only the controller's `regenerate()` gives a new CSRF token.
+    // A planted session must not survive the sign-in (session fixation). Laravel's `SessionGuard::login()`
+    // calls `regenerate(true)`, which gives a new ID and a new CSRF token. The controller's `regenerate()`
+    // does the same again, so this test pins the result, not the controller line.
     $firebase = mockFirebase();
     $firebase->shouldReceive('verifyIdToken')->once()->andReturn(socialSignInToken('uid-1'));
     $firebase->shouldReceive('getUser')->andReturn(userRecord());

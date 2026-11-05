@@ -23,13 +23,13 @@ use Kreait\Firebase\Auth\UserRecord;
  */
 class RefreshFirebaseIdentity
 {
+    public function __construct(protected DetectPasswordProvider $detectPasswordProvider) {}
+
     /**
      * Pass `$localEmail` when the record can hold another email than Firebase, for example before
      * its save. A verified Firebase email then raises `email_verified_at` only when the two emails
      * are the same, compared without case. An unverified Firebase email always clears the flag.
      */
-    public function __construct(protected DetectPasswordProvider $detectPasswordProvider) {}
-
     public function handle(FirebaseIdentity $identity, UserRecord $firebaseUser, ?string $localEmail = null): void
     {
         $now = $identity->freshTimestamp();

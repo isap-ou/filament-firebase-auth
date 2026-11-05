@@ -172,3 +172,36 @@ it('uses the linked record of a firebase user without an email', function () {
     expect($resolved->resolution)->toBe(Resolution::Linked)
         ->and($resolved->user?->getKey())->toBe($user->getKey());
 });
+
+it('never lets a host condition with a top-level orWhere widen the link lookup', function () {
+    // Without a nested where, `id = ? and name = ? or email = ?` would return another record.
+    linkedUser();
+    User::query()->create(['name' => 'John', 'email' => 'john@example.com']);
+    $constraints = fn ($query) => $query->where('name', 'Nobody')->orWhere('email', 'john@example.com');
+
+    $resolved = app(ResolveLocalUser::class)->handle(userRecord(), User::class, true, $constraints);
+
+    expect($resolved->resolution)->toBe(Resolution::Blocked)
+        ->and($resolved->user)->toBeNull();
+});
+
+it('never lets a host condition with a top-level orWhere pass a record found by email', function () {
+    User::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+    User::query()->create(['name' => 'John', 'email' => 'john@example.com']);
+    $constraints = fn ($query) => $query->where('name', 'Nobody')->orWhere('email', 'john@example.com');
+
+    $resolved = app(ResolveLocalUser::class)->handle(userRecord(), User::class, true, $constraints);
+
+    expect($resolved->resolution)->toBe(Resolution::Blocked);
+});
+
+it('keeps the linked record when a host condition with orWhere matches it', function () {
+    $user = linkedUser();
+    User::query()->create(['name' => 'John', 'email' => 'john@example.com']);
+    $constraints = fn ($query) => $query->where('name', 'Jane')->orWhere('email', 'john@example.com');
+
+    $resolved = app(ResolveLocalUser::class)->handle(userRecord(), User::class, true, $constraints);
+
+    expect($resolved->resolution)->toBe(Resolution::Linked)
+        ->and($resolved->user?->getKey())->toBe($user->getKey());
+});

@@ -13,7 +13,9 @@ beforeEach(function () {
 it('verifies the email in firebase from the filament link', function () {
     $user = linkedUser(verified: false);
     $firebase = mockFirebase();
-    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['emailVerified' => true])->andReturn(userRecord());
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord(['emailVerified' => false]));
+    $firebase->shouldReceive('updateUser')->once()
+        ->with('uid-1', ['email' => 'jane@example.com', 'emailVerified' => true])->andReturn(userRecord());
     Filament::setCurrentPanel('app');
 
     $url = Filament::getVerifyEmailUrl($user);
@@ -21,6 +23,22 @@ it('verifies the email in firebase from the filament link', function () {
     actingAs($user, 'app')->get($url)->assertRedirect();
 
     expect($user->firebaseIdentity?->fresh()?->email_verified_at)->not->toBeNull();
+});
+
+it('does not verify a firebase email that the link did not prove', function () {
+    // The attacker keeps a link for their own address, then changes the Firebase email of their account.
+    $user = linkedUser(verified: false, email: 'evil@example.com');
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')
+        ->andReturn(userRecord(['email' => 'boss@example.com', 'emailVerified' => false]));
+    $firebase->shouldNotReceive('updateUser');
+    Filament::setCurrentPanel('app');
+
+    $url = Filament::getVerifyEmailUrl($user);
+
+    actingAs($user, 'app')->get($url);
+
+    expect($user->firebaseIdentity?->fresh()?->email_verified_at)->toBeNull();
 });
 
 it('skips the prompt for a user verified in another project', function () {

@@ -1,5 +1,6 @@
 <?php
 
+use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
 use Kreait\Firebase\Auth\SignInResult;
 use Kreait\Firebase\Auth\UserRecord;
 use Kreait\Firebase\Contract\Auth;
@@ -34,6 +35,22 @@ function userRecord(array $overrides = []): UserRecord
 function signInResult(string $uid): SignInResult
 {
     return SignInResult::fromData(['localId' => $uid]);
+}
+
+/**
+ * Create a saved fixture user with a saved link to the given Firebase UID.
+ */
+function linkedUser(bool $verified = true, string $uid = 'uid-1', string $email = 'jane@example.com'): User
+{
+    $user = User::query()->create(['name' => 'Jane', 'email' => $email]);
+
+    $user->firebaseIdentity()->create([
+        'firebase_uid' => $uid,
+        'email_verified_at' => $verified ? now() : null,
+        'synced_at' => now(),
+    ]);
+
+    return $user->load('firebaseIdentity');
 }
 
 /**

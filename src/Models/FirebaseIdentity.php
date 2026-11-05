@@ -17,6 +17,9 @@ use Illuminate\Support\Carbon;
  * @property int|string $authenticatable_id
  * @property Carbon|null $email_verified_at
  * @property Carbon|null $synced_at
+ * @property Carbon|null $tokens_valid_after
+ * @property Carbon|null $invalidated_at
+ * @property string|null $session_salt
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  */
@@ -26,6 +29,9 @@ class FirebaseIdentity extends Model
         'firebase_uid',
         'email_verified_at',
         'synced_at',
+        'tokens_valid_after',
+        'invalidated_at',
+        'session_salt',
     ];
 
     public function getTable(): string
@@ -59,6 +65,8 @@ class FirebaseIdentity extends Model
         return [
             'email_verified_at' => 'datetime',
             'synced_at' => 'datetime',
+            'tokens_valid_after' => 'datetime',
+            'invalidated_at' => 'datetime',
         ];
     }
 }

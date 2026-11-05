@@ -14,7 +14,9 @@ use Illuminate\Support\Timebox;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\ChangeFirebasePassword;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\DetectPasswordProvider;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUserByEmail;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\RevokeFirebaseTokens;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\SetFirebaseEmailVerified;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\UnlinkFirebaseProviders;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\EnsureFirebaseIdentityLinkable;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\LinkFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Exceptions\FirebaseIdentityNotLinkable;
@@ -241,12 +243,23 @@ class FirebasePasswordBroker extends PasswordBroker
     }
 
     /**
-     * The email is marked as verified first. The password change then returns the Firebase user
-     * with both changes, and with the new `tokensValidAfterTime`. The link copies that state,
+     * An unverified Firebase email may belong to an account that another person created with
+     * this email before the owner did (account pre-hijacking). That person can know its password
+     * or can have linked a social provider to it. So, before the reset verifies the email and links
+     * the record, the broker removes every provider except `password` and revokes the refresh tokens.
+     * A verified account keeps its providers and tokens.
+     *
+     * The email is marked as verified next. The password change then returns the Firebase user
+     * with all changes, and with the new `tokensValidAfterTime`. The link copies that state,
      * so `email_verified_at` is set and other sessions of the record log out.
      */
     protected function resetInFirebase(Model & Authenticatable $user, UserRecord $firebaseUser, #[SensitiveParameter] string $password): void
     {
+        if (! $firebaseUser->emailVerified) {
+            app(UnlinkFirebaseProviders::class)->handle($firebaseUser->uid, ['password']);
+            app(RevokeFirebaseTokens::class)->handle($firebaseUser->uid);
+        }
+
         app(SetFirebaseEmailVerified::class)->handle($firebaseUser->uid, true);
 
         $changed = app(ChangeFirebasePassword::class)->handle($firebaseUser->uid, $password);

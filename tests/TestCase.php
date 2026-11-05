@@ -58,13 +58,15 @@ class TestCase extends Orchestra
     protected function getEnvironmentSetUp($app): void
     {
         $app['config']->set('database.default', 'testing');
+        // Filament's login page rate limits through the cache. The fixture database has no cache table.
+        $app['config']->set('cache.default', 'array');
 
         $this->defineAuthConfig($app);
     }
 
     /**
      * Defines all guards, user providers and password brokers of the fixture panels.
-     * The `firebase_*` providers use the `eloquent` driver until the plugin has its `firebase` driver.
+     * The `firebase_*` providers use the plugin's `firebase` driver.
      * The `users` broker keeps Laravel's default driver.
      */
     protected function defineAuthConfig($app): void
@@ -73,8 +75,8 @@ class TestCase extends Orchestra
         $app['config']->set('auth.guards.admin', ['driver' => 'session', 'provider' => 'firebase_admins']);
 
         $app['config']->set('auth.providers.users', ['driver' => 'eloquent', 'model' => User::class]);
-        $app['config']->set('auth.providers.firebase_users', ['driver' => 'eloquent', 'model' => User::class]);
-        $app['config']->set('auth.providers.firebase_admins', ['driver' => 'eloquent', 'model' => Admin::class]);
+        $app['config']->set('auth.providers.firebase_users', ['driver' => 'firebase', 'model' => User::class]);
+        $app['config']->set('auth.providers.firebase_admins', ['driver' => 'firebase', 'model' => Admin::class]);
 
         $app['config']->set('auth.passwords.users', [
             'provider' => 'users',

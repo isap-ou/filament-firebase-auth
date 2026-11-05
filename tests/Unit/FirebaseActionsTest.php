@@ -19,14 +19,17 @@ use Kreait\Firebase\Exception\Auth\UserNotFound;
 it('keeps one instance of the memoizing actions per request', function () {
     mockFirebase();
     $find = app(FindFirebaseUser::class);
+    $findByEmail = app(FindFirebaseUserByEmail::class);
     $check = app(CheckFirebasePassword::class);
 
     expect(app(FindFirebaseUser::class))->toBe($find)
+        ->and(app(FindFirebaseUserByEmail::class))->toBe($findByEmail)
         ->and(app(CheckFirebasePassword::class))->toBe($check);
 
     app()->forgetScopedInstances();
 
     expect(app(FindFirebaseUser::class))->not->toBe($find)
+        ->and(app(FindFirebaseUserByEmail::class))->not->toBe($findByEmail)
         ->and(app(CheckFirebasePassword::class))->not->toBe($check);
 });
 
@@ -109,6 +112,26 @@ it('finds a firebase user by email', function () {
     mockFirebase()->shouldReceive('getUserByEmail')->once()->with('jane@example.com')->andReturn(userRecord());
 
     expect(app(FindFirebaseUserByEmail::class)->handle('jane@example.com')?->uid)->toBe('uid-1');
+});
+
+it('finds a firebase user by email once per request', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->once()->with('jane@example.com')->andReturn(userRecord());
+    $firebase->shouldReceive('getUserByEmail')->once()->with('nobody@example.com')->andThrow(new UserNotFound('No user'));
+    $find = app(FindFirebaseUserByEmail::class);
+
+    expect($find->handle('jane@example.com')?->uid)->toBe('uid-1')
+        ->and(app(FindFirebaseUserByEmail::class)->handle('jane@example.com')?->uid)->toBe('uid-1')
+        ->and($find->handle('nobody@example.com'))->toBeNull()
+        ->and($find->handle('nobody@example.com'))->toBeNull();
+});
+
+it('asks firebase again after a failed email lookup', function () {
+    mockFirebase()->shouldReceive('getUserByEmail')->twice()->andThrow(new ApiConnectionFailed('Firebase is down'));
+    $find = app(FindFirebaseUserByEmail::class);
+
+    expect(fn () => $find->handle('jane@example.com'))->toThrow(ApiConnectionFailed::class)
+        ->and(fn () => $find->handle('jane@example.com'))->toThrow(ApiConnectionFailed::class);
 });
 
 it('returns null for an unknown email', function () {

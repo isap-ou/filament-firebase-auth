@@ -22,6 +22,8 @@ return new class extends Migration
 
             $table->unique(['authenticatable_type', 'firebase_uid']);
             $table->unique(['authenticatable_type', 'authenticatable_id']);
+            // The `orphaned` deletion mode looks up a UID in all models.
+            $table->index('firebase_uid');
         });
     }
 

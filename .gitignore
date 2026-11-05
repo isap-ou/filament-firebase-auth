@@ -6,3 +6,4 @@ build
 .phpunit.cache
 .phpunit.result.cache
 composer.lock
+firebase-debug.log

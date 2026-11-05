@@ -20,6 +20,15 @@
             <directory>tests</directory>
         </testsuite>
     </testsuites>
+    <!--
+        The emulator group needs the Firebase Auth Emulator. `composer test:emulator` starts it and runs the group.
+        The group option on the command line (group=emulator) overrides this exclusion.
+    -->
+    <groups>
+        <exclude>
+            <group>emulator</group>
+        </exclude>
+    </groups>
     <php>
         <!--
             Test-only encryption key. It is not a secret and protects no data.

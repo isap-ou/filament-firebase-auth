@@ -51,7 +51,7 @@ Send your pull request to `main`. Read [RELEASING.md](../RELEASING.md) for the f
 - **Code style.** Run `composer lint` to apply [Laravel Pint](https://laravel.com/docs/pint). CI runs `composer test:lint`.
 - **Static analysis.** Run `composer analyse`. CI runs PHPStan with Larastan.
 - **Add tests.** We do not accept a change without tests. Run `composer test`. The tests use Pest and Orchestra Testbench. They never call a real Firebase project. They use a mock of `Kreait\Firebase\Contract\Auth`.
-- **Emulator tests.** The `emulator` test group runs against the Firebase Auth Emulator. Run `npx firebase-tools emulators:exec --project demo-filament-firebase-auth --only auth "vendor/bin/pest --group=emulator"`. You need Node and Java 21 or later.
+- **Emulator tests.** The `emulator` test group runs against the Firebase Auth Emulator. Run `npm ci` once. It installs the `firebase-tools` version that `package.json` pins. Then run `npx firebase-tools emulators:exec --project demo-filament-firebase-auth --only auth "vendor/bin/pest --group=emulator"`, or `composer test:emulator`. You need Node and Java 21 or later. `composer test` does not run this group.
 - **JavaScript.** If you change `resources/js`, run `npm ci && npm run build`. Commit the result in `resources/dist`. CI checks that the committed bundle matches the source.
 - **No custom statics.** Do not add custom static methods, static properties or class constants, unless Laravel or Filament requires them. Use instance methods, Eloquent scopes and classes from the container.
 - **Translations.** Put each new user-facing string in a translation file in `resources/lang`.

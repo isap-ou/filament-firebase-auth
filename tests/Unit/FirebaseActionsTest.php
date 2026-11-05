@@ -115,15 +115,33 @@ it('finds a firebase user by email', function () {
 });
 
 it('finds a firebase user by email once per request', function () {
-    $firebase = mockFirebase();
-    $firebase->shouldReceive('getUserByEmail')->once()->with('jane@example.com')->andReturn(userRecord());
-    $firebase->shouldReceive('getUserByEmail')->once()->with('nobody@example.com')->andThrow(new UserNotFound('No user'));
+    mockFirebase()->shouldReceive('getUserByEmail')->once()->with('jane@example.com')->andReturn(userRecord());
     $find = app(FindFirebaseUserByEmail::class);
 
     expect($find->handle('jane@example.com')?->uid)->toBe('uid-1')
-        ->and(app(FindFirebaseUserByEmail::class)->handle('jane@example.com')?->uid)->toBe('uid-1')
-        ->and($find->handle('nobody@example.com'))->toBeNull()
+        ->and(app(FindFirebaseUserByEmail::class)->handle('jane@example.com')?->uid)->toBe('uid-1');
+});
+
+it('asks firebase again after an unknown email', function () {
+    mockFirebase()->shouldReceive('getUserByEmail')->twice()->with('nobody@example.com')->andThrow(new UserNotFound('No user'));
+    $find = app(FindFirebaseUserByEmail::class);
+
+    expect($find->handle('nobody@example.com'))->toBeNull()
         ->and($find->handle('nobody@example.com'))->toBeNull();
+});
+
+it('finds an account that was created after an unknown email lookup', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->once()->ordered()->with('jane@example.com')->andThrow(new UserNotFound('No user'));
+    $firebase->shouldReceive('createUser')->once()->ordered()->andReturn(userRecord(['localId' => 'uid-2']));
+    $firebase->shouldReceive('getUserByEmail')->once()->ordered()->with('jane@example.com')->andReturn(userRecord(['localId' => 'uid-2']));
+    $find = app(FindFirebaseUserByEmail::class);
+
+    expect($find->handle('jane@example.com'))->toBeNull();
+
+    app(CreateFirebaseUser::class)->handle('jane@example.com', 'secret', 'Jane', true);
+
+    expect($find->handle('jane@example.com')?->uid)->toBe('uid-2');
 });
 
 it('asks firebase again after a failed email lookup', function () {

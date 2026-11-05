@@ -27,6 +27,12 @@
             A key that is already set in the environment takes precedence.
         -->
         <env name="APP_KEY" value="base64:GVkSMs8Zo+UZ7y3BQ9ONCmjxZkbOpgq2xrSFVPDNVaQ="/>
+        <!--
+            Some Testbench commands create a .env file in the Testbench skeleton with SESSION_DRIVER=cookie.
+            The session tests need the array driver. Dotenv does not overwrite a value that is set here.
+            The cache store is set in TestCase. No test uses a real queue connection.
+        -->
+        <env name="SESSION_DRIVER" value="array"/>
     </php>
     <source>
         <include>

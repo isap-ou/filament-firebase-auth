@@ -14,6 +14,8 @@ use Isapp\FilamentFirebaseAuth\Exceptions\FirebaseIdentityNotLinkable;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Pages\Register;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
+use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Pages\FailingAfterRegister;
+use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Pages\TransactionalRegister;
 use Kreait\Firebase\Auth\UserRecord;
 use Kreait\Firebase\Exception\Auth\ApiConnectionFailed;
 use Kreait\Firebase\Exception\Auth\EmailExists;
@@ -22,13 +24,15 @@ use Livewire\Features\SupportTesting\Testable;
 use function Pest\Livewire\livewire;
 
 /**
- * Opens the plugin registration page of the open fixture panel and submits the form.
+ * Opens a registration page on the open fixture panel and submits the form.
+ *
+ * @param  class-string<Register>  $page
  */
-function submitRegistration(string $email = 'new@example.com', string $password = 'Secret123!'): Testable
+function submitRegistration(string $email = 'new@example.com', string $password = 'Secret123!', string $page = Register::class): Testable
 {
     Filament::setCurrentPanel('app');
 
-    return livewire(Register::class)
+    return livewire($page)
         ->fillForm([
             'name' => 'New User',
             'email' => $email,
@@ -120,17 +124,44 @@ it('keeps the native registration form', function () {
         ->toBe($fields(livewire(FilamentRegister::class)));
 });
 
-it('tells a user of another app to sign in instead', function () {
+it('shows a firebase-only account as a local duplicate', function () {
+    User::query()->create(['name' => 'Taken', 'email' => 'taken@example.com']);
     $firebase = mockFirebase();
     $firebase->shouldReceive('createUser')->once()->andThrow(new EmailExists('EMAIL_EXISTS'));
     $firebase->shouldNotReceive('deleteUser');
 
-    submitRegistration()->assertHasFormErrors(['email' => __('filament-firebase-auth::register.email_exists')]);
+    // Filament's own unique rule rejects the local duplicate before any Firebase call.
+    $localMessage = submitRegistration('taken@example.com')->errors()->first('data.email');
 
-    expect(__('filament-firebase-auth::register.email_exists'))
-        ->toBe('This email already has an account. Sign in with your existing password.')
-        ->and(User::query()->count())->toBe(0)
+    expect($localMessage)->toBe('The email address has already been taken.');
+
+    submitRegistration()->assertHasFormErrors(['email' => $localMessage]);
+
+    expect(User::query()->count())->toBe(1)
         ->and(auth('app')->check())->toBeFalse();
+});
+
+it('deletes the firebase account once when the page transaction rolls back later', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('createUser')->once()->andReturn(registeredFirebaseUser());
+    $firebase->shouldReceive('deleteUser')->once()->with('uid-new');
+
+    expect(fn (): Testable => submitRegistration(page: FailingAfterRegister::class))
+        ->toThrow(RuntimeException::class, 'The afterRegister hook failed.');
+
+    expect(User::query()->count())->toBe(0)
+        ->and(FirebaseIdentity::query()->count())->toBe(0)
+        ->and(auth('app')->check())->toBeFalse();
+});
+
+it('deletes the firebase account once when the local step fails inside the page transaction', function () {
+    failLocalUserCreation();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('createUser')->once()->andReturn(registeredFirebaseUser());
+    $firebase->shouldReceive('deleteUser')->once()->with('uid-new');
+
+    expect(fn (): Testable => submitRegistration(page: TransactionalRegister::class))
+        ->toThrow(RuntimeException::class, 'The local record failed.');
 });
 
 it('deletes the firebase account when local creation fails', function () {

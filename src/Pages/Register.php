@@ -4,8 +4,10 @@ namespace Isapp\FilamentFirebaseAuth\Pages;
 
 use Filament\Auth\Pages\Register as FilamentRegister;
 use Filament\Facades\Filament;
+use Filament\Forms\Components\Field;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\CreateFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\DeleteFirebaseUser;
@@ -30,7 +32,11 @@ class Register extends FilamentRegister
      *
      * Filament hashes the password only in the copy that `getState()` returns, so `$this->data`
      * still holds the clear password. The plugin gives it to Firebase and never stores the hash.
-     * When the local step fails, the plugin deletes the Firebase account that it created here.
+     *
+     * The plugin deletes the Firebase account that it created here exactly once in two cases:
+     * - The local step fails. The plugin deletes the account at once.
+     * - The local step succeeds, but the open transaction of the page rolls back later (for example,
+     *   an `afterRegister` hook throws). The plugin deletes the account after the rollback.
      *
      * @param  array<string, mixed>  $data
      *
@@ -45,16 +51,25 @@ class Register extends FilamentRegister
         );
 
         try {
-            return $this->createLocalUser($firebaseUser);
+            $user = $this->createLocalUser($firebaseUser);
         } catch (Throwable $exception) {
             $this->deleteFirebaseUser($firebaseUser->uid);
 
             throw $exception;
         }
+
+        // Filament's page transaction runs on the default connection. Without an open transaction,
+        // Laravel ignores this callback, and the committed record keeps its Firebase account.
+        DB::afterRollBack(fn () => $this->deleteFirebaseUser($firebaseUser->uid));
+
+        return $user;
     }
 
     /**
      * The new account has an unverified email. Filament's verification email then goes out as usual.
+     *
+     * An email that already has a Firebase account gets the same error as a local duplicate.
+     * So the page never tells whether an email has an account in a shared Firebase project.
      */
     protected function createFirebaseUser(string $email, #[SensitiveParameter] string $password, ?string $name): UserRecord
     {
@@ -62,9 +77,19 @@ class Register extends FilamentRegister
             return app(CreateFirebaseUser::class)->handle($email, $password, $name, verified: false);
         } catch (EmailExists) {
             throw ValidationException::withMessages([
-                'data.email' => __('filament-firebase-auth::register.email_exists'),
+                'data.email' => __('validation.unique', ['attribute' => $this->getEmailValidationAttribute()]),
             ]);
         }
+    }
+
+    /**
+     * Returns the attribute name that Filament's validator puts into the `unique` message of the email field.
+     */
+    protected function getEmailValidationAttribute(): string
+    {
+        $field = $this->form->getFlatFields(withHidden: true)['email'] ?? null;
+
+        return $field instanceof Field ? $field->getValidationAttribute() : 'email';
     }
 
     /**

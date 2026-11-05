@@ -102,28 +102,154 @@ php artisan filament:assets
 
 ## Firebase setup
 
-In the [Firebase console](https://console.firebase.google.com/):
+This section takes you from zero to a Firebase project that the plugin can use.
+The [Firebase console](https://console.firebase.google.com/) changes its menus from time to time.
+Newer consoles put **Authentication** under **Security**. If a label differs, look for the same words nearby.
 
-1. Open **Authentication → Sign-in method**. Turn on **Email/Password**. Turn on each social provider that you want to show, for example **Google**.
-2. Open **Authentication → Settings → Authorized domains**. Add the domain of your Laravel app. Without it, the social sign-in popup fails.
-3. Open **Project settings → Service accounts**. Generate a private key (a JSON file). `kreait/laravel-firebase` uses it on the server.
-4. Open **Project settings → General**. Add a web app if you have none. Copy its config values for the social buttons.
+### 1. Create or choose a Firebase project
 
-Then set the environment variables:
+- **Another app already uses a Firebase project** (for example your mobile app): use that project. Shared users are the reason for this plugin.
+  Keep `delete_accounts` at `never` in this case. Read [Account deletion](#account-deletion).
+- **No project yet:** in the Firebase console, create a new project, enter a project name and confirm. Google Analytics is not needed for this plugin.
+
+Firebase guide: [Add Firebase to your JavaScript project](https://firebase.google.com/docs/web/setup).
+
+### 2. Turn on the sign-in providers
+
+Open **Authentication → Sign-in method**.
+
+- **Email/Password:** enable it and save. The email and password sign-in of the plugin needs it.
+  [Firebase guide](https://firebase.google.com/docs/auth/web/password-auth).
+- Enable each social provider that you list in `providers()`. Every provider other than Google needs an app in the developer console of that provider.
+  For most providers, the Firebase dialog shows an OAuth redirect URI in the form `https://YOUR-PROJECT-ID.firebaseapp.com/__/auth/handler`.
+  Register this URI (or its `firebaseapp.com` domain) in the app of the provider.
+
+| Provider | What Firebase asks for | Firebase guide |
+|---|---|---|
+| Google | Enable and save. The console can ask for a project support email. No other app is needed. | [Google](https://firebase.google.com/docs/auth/web/google-signin) |
+| Apple | An Apple Developer Program membership: a Services ID, your Team ID, and a "Sign in with Apple" private key with its key ID. Register the redirect URI as a Return URL at Apple. | [Apple](https://firebase.google.com/docs/auth/web/apple) |
+| Microsoft | An app registration in Microsoft Entra ID (formerly Azure Active Directory): its client ID and a client secret. Register the redirect URI there. Use `providerParameters(SocialProvider::Microsoft, ['tenant' => '...'])` to allow one tenant only. | [Microsoft](https://firebase.google.com/docs/auth/web/microsoft-oauth) |
+| GitHub | A GitHub OAuth app: its client ID and client secret. Put the redirect URI in "Authorization callback URL". | [GitHub](https://firebase.google.com/docs/auth/web/github-auth) |
+| Facebook | A Facebook for Developers app: its App ID and App Secret. Put the redirect URI in the Facebook Login settings of the app, in the list of OAuth redirect URIs. | [Facebook](https://firebase.google.com/docs/auth/web/facebook-login) |
+| X (Twitter) | An X developer app: its API key and API secret. Put the redirect URI in the callback URL of the app. | [Twitter](https://firebase.google.com/docs/auth/web/twitter-login) |
+| Yahoo | A Yahoo developer app with the OpenID Connect permissions `profile` and `email`: its client ID and client secret. Register the redirect URI there. | [Yahoo](https://firebase.google.com/docs/auth/web/yahoo-oauth) |
+
+### 3. Add your domains to the authorized domains
+
+Open **Authentication → Settings → Authorized domains** and click **Add domain**.
+Add each domain that serves a Firebase panel, for example `admin.example.com`.
+For local development, add `localhost` too: new projects no longer include it by default.
+Without the domain, the social sign-in popup fails with `auth/unauthorized-domain`.
+
+Firebase guide: the "Authorized domains" note in [Email link authentication](https://firebase.google.com/docs/auth/web/email-link-auth).
+
+### 4. Create the server credentials (service account)
+
+The server talks to Firebase through [`kreait/laravel-firebase`](https://github.com/kreait/laravel-firebase) with a service account.
+
+1. Open **Project settings → Service accounts**.
+2. Click **Generate new private key**, then **Generate key**. The browser downloads a JSON file.
+3. Move the file into your app, outside the public directory, for example `storage/app/firebase/service-account.json`.
+4. Add the file to `.gitignore`. **Never commit it.** Anyone with this file can manage every user of the project.
+
+```gitignore
+/storage/app/firebase/service-account.json
+```
+
+5. Point `kreait/laravel-firebase` to it in `.env`. A relative path starts at the root of your app:
 
 ```dotenv
-# Server credentials, read by kreait/laravel-firebase
-FIREBASE_CREDENTIALS=/path/to/service-account.json
+FIREBASE_CREDENTIALS=storage/app/firebase/service-account.json
+```
 
-# Web config for the social buttons, read by this plugin
-FIREBASE_WEB_API_KEY=
-FIREBASE_WEB_AUTH_DOMAIN=your-project.firebaseapp.com
-FIREBASE_WEB_PROJECT_ID=your-project
-FIREBASE_WEB_APP_ID=
+`kreait/laravel-firebase` also reads `GOOGLE_APPLICATION_CREDENTIALS` when `FIREBASE_CREDENTIALS` is empty.
+On production, give each server its own copy of the file, for example through your secret store or deploy tool.
+
+You only need the `kreait/laravel-firebase` config file to change more than the credentials (for example the HTTP timeout). To publish it:
+
+```bash
+php artisan vendor:publish --provider="Kreait\Laravel\Firebase\ServiceProvider" --tag=config
 ```
 
 Leave `FIREBASE_AUTH_TENANT_ID` empty. The plugin does not support Firebase multi-tenancy.
-The web config values are public by design. The service account file is a secret: keep it out of git.
+
+Firebase guide: [Add the Firebase Admin SDK to your server](https://firebase.google.com/docs/admin/setup).
+
+### 5. Register a web app for the social buttons
+
+The social buttons run the Firebase JS SDK in the browser. It needs the config of a Firebase web app.
+You can skip this step when the panel has no social providers.
+
+1. On the project overview page, click the **Web** icon (`</>`). When the project already has apps, click **Add app**, then **Web**.
+2. Enter a nickname and click **Register app**. The plugin does not need Firebase Hosting.
+3. Copy the values of the `firebaseConfig` object into `.env`:
+
+| `firebaseConfig` key | Plugin env key |
+|---|---|
+| `apiKey` | `FIREBASE_WEB_API_KEY` |
+| `authDomain` | `FIREBASE_WEB_AUTH_DOMAIN` |
+| `projectId` | `FIREBASE_WEB_PROJECT_ID` |
+| `appId` | `FIREBASE_WEB_APP_ID` |
+
+```dotenv
+FIREBASE_WEB_API_KEY=AIza...
+FIREBASE_WEB_AUTH_DOMAIN=your-project-id.firebaseapp.com
+FIREBASE_WEB_PROJECT_ID=your-project-id
+FIREBASE_WEB_APP_ID=1:1234567890:web:abc123
+```
+
+You find the same values later under **Project settings → General → Your apps → Config**.
+
+The web `apiKey` is not a secret. It only identifies your Firebase project, and every visitor of the login page can see it.
+Still, restrict it: in the Google Cloud console, open **APIs & Services → Credentials** and edit the key.
+Under **Application restrictions**, allow only your panel domains and your `authDomain` (`your-project-id.firebaseapp.com`) as HTTP referrers. The sign-in popup runs on the `authDomain` and uses the key too. Under **API restrictions**, allow only the APIs that Firebase Authentication needs (Identity Toolkit API and Token Service API).
+Test the change on a test key first, because a wrong restriction breaks the sign-in.
+Read [Learn about using and managing API keys for Firebase](https://firebase.google.com/docs/projects/api-keys).
+
+### 6. Recommended settings
+
+- **Email enumeration protection:** open **Authentication → Settings → User actions**. Firebase turns it on by default for projects created on or after September 15, 2023.
+  The plugin works with it on or off, and shows the same failure message for every failed sign-in either way.
+- **Password policy:** open **Authentication → Settings → Password policy** to require a minimum length or character types.
+  Filament's registration and profile forms check Laravel's `Password::defaults()`. Set the same rules there, so the forms check them too.
+- **Email templates:** the plugin does not use the Firebase email templates.
+  Password reset, email verification and email change emails come from Filament and Laravel. Configure Laravel mail (`MAIL_MAILER` and the rest) for them.
+
+Firebase guide: [password policy and email enumeration protection](https://firebase.google.com/docs/auth/web/password-auth).
+
+### 7. Local development with the Firebase Auth Emulator
+
+You can develop without a real Firebase project. The [Firebase Auth Emulator](https://firebase.google.com/docs/emulator-suite/connect_auth) needs Node and Java 21 or later.
+
+```bash
+npm install --save-dev --save-exact firebase-tools
+npx --no-install firebase-tools emulators:start --only auth --project demo-your-app
+```
+
+Then set in `.env`:
+
+```dotenv
+FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099
+FIREBASE_CREDENTIALS='{"type":"service_account","project_id":"demo-your-app","client_email":"emulator@demo-your-app.iam.gserviceaccount.com","private_key":"unused"}'
+```
+
+`kreait/firebase-php` then sends all Auth calls to the emulator. A project ID that starts with `demo-` needs no real Firebase project.
+The emulator ignores credentials. The placeholder only gives `kreait/firebase-php` the project ID.
+Without it, `kreait/firebase-php` looks for Google credentials on your machine: a slow probe of the cloud metadata server, or your real credentials.
+Email and password sign-in, registration, password reset, verification, the profile page and `make:filament-user` work against the emulator.
+The social buttons do not: test them against a real development project.
+The emulator keeps its accounts in memory. They are gone after a restart.
+
+### 8. Firebase troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| The social button shows "The browser blocked the sign-in window." | The browser blocked the popup (`auth/popup-blocked`). Allow pop-ups for your site and click again. |
+| The social button shows "The sign-in failed. Try again." at once | Often `auth/unauthorized-domain`: add the domain to the authorized domains (step 3). Or `auth/operation-not-allowed`: enable the provider in **Sign-in method** (step 2). Or the `FIREBASE_WEB_*` values are wrong (step 5). |
+| "Unable to determine the Firebase Project ID" | `kreait/firebase-php` found no credentials. Check `FIREBASE_CREDENTIALS` and the file path (step 4). With the emulator, use the placeholder credentials (step 7). After a change of `.env`, run `php artisan config:clear`. |
+| An error while `kreait/firebase-php` reads the credentials | The file is not the service account JSON, or it is incomplete. Generate a new key (step 4). Do not use the web config or a `google-services.json` file. |
+| Every password sign-in fails, and the log says that Firebase failed | The service account is wrong or deleted, or the server cannot reach Firebase. The plugin logs the exception class only. Check step 4 and the network. |
+| The social button shows "The page has expired. Reload the page and try again." | The CSRF token of the page expired (HTTP 419), for example after a long idle time. Reload the login page. |
 
 ## Configure the auth guard, provider and password broker
 
@@ -547,7 +673,7 @@ A password reset proves that the person owns the email, so it marks the email as
 The next sign-in then links the record.
 
 **The social sign-in popup is blocked or closes at once.**
-Allow pop-ups for your site. Check that your app domain is in **Authentication → Settings → Authorized domains** in the Firebase console.
+Read [Firebase troubleshooting](#8-firebase-troubleshooting).
 
 **"This email already has an account with another sign-in method."**
 By default, Firebase allows one account per email address. The person created the account with another method, for example a password.

@@ -1,0 +1,44 @@
+name: assets
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# The committed bundle in resources/dist must match the source in resources/js.
+# Each step after checkout skips while the repository has no package.json.
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Build assets
+        if: hashFiles('package.json') != ''
+        run: npm ci && npm run build
+
+      - name: Check that the committed bundle is up to date
+        if: hashFiles('package.json') != ''
+        run: |
+          git diff --exit-code resources/dist
+          untracked="$(git status --porcelain --untracked-files=all resources/dist)"
+          if [ -n "$untracked" ]; then
+            echo "::error::npm run build created files that are not committed:"
+            echo "$untracked"
+            exit 1
+          fi

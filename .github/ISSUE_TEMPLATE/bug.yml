@@ -1,0 +1,75 @@
+name: Bug Report
+description: Report an issue or a bug in the package
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Please give the details below, so that we can find the problem.
+        Do not report security issues here. Read the security policy instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen?
+      placeholder: I cannot sign in with Google, because the popup closes and the login form shows an error.
+    validations:
+      required: true
+  - type: textarea
+    id: how-to-reproduce
+    attributes:
+      label: How to reproduce the bug
+      description: Give the steps that cause the problem. Add the config values and the panel setup that you use. Remove all secrets, keys and tokens.
+      placeholder: When I do X, I see Y.
+    validations:
+      required: true
+  - type: input
+    id: package-version
+    attributes:
+      label: Package Version
+      description: Which version of the package do you use? Give the full version.
+      placeholder: 5.0.0
+    validations:
+      required: true
+  - type: input
+    id: filament-version
+    attributes:
+      label: Filament Version
+      description: Which version of Filament do you use? Give the full version.
+      placeholder: 5.0.0
+    validations:
+      required: true
+  - type: input
+    id: php-version
+    attributes:
+      label: PHP Version
+      description: Which version of PHP do you use? Give the full version.
+      placeholder: 8.4.0
+    validations:
+      required: true
+  - type: input
+    id: laravel-version
+    attributes:
+      label: Laravel Version
+      description: Which version of Laravel do you use? Give the full version.
+      placeholder: 13.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-systems
+    attributes:
+      label: Which operating systems does this happen on?
+      description: You can select more than one.
+      multiple: true
+      options:
+        - macOS
+        - Windows
+        - Linux
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Give any other information that can help us.
+    validations:
+      required: false

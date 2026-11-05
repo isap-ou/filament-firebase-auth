@@ -8,6 +8,8 @@ The plugin major version equals the Filament major version. Read `RELEASING.md` 
 
 ## [Unreleased]
 
+## v5.0.0 - 2026-11-05
+
 ### Added
 
 - Firebase Authentication for Filament 5 panels through Laravel contracts: the `firebase` user provider driver and the `firebase` password broker driver. Filament's own login, password reset and email verification pages stay. The plugin never stores a password or a password hash.

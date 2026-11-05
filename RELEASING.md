@@ -49,7 +49,9 @@ Do these steps on the commit that you will tag:
 2. Push the tag: `git push origin vX.Y.Z`.
 3. On GitHub, create a release from the tag. Use the tag name as the release title, for example `v5.0.0`.
    Paste the `CHANGELOG.md` section of this version as the release notes.
-4. Publish the release. This starts the `update-changelog` workflow.
+4. Publish the release as a full release, not a pre-release.
+   A full release starts the `update-changelog` workflow (`release: released`).
+   A pre-release does not change `CHANGELOG.md`.
    - If `CHANGELOG.md` already has a heading that starts with the release title, the workflow makes no change.
    - If the heading is missing, the workflow adds the release notes under a new heading and commits `CHANGELOG.md` to `main`.
 5. Packagist gets the new tag through the GitHub webhook. Check that the version shows on

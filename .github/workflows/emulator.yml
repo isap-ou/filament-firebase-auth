@@ -60,4 +60,4 @@ jobs:
       # FIREBASE_AUTH_EMULATOR_HOST for the test process.
       - name: Run emulator tests
         if: hashFiles('firebase.json') != ''
-        run: npx firebase-tools emulators:exec --project demo-filament-firebase-auth --only auth "vendor/bin/pest --group=emulator"
+        run: npx --yes firebase-tools@15.35.0 emulators:exec --project demo-filament-firebase-auth --only auth "vendor/bin/pest --group=emulator"

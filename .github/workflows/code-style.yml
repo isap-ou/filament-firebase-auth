@@ -1,21 +1,26 @@
-name: fix-code-style
+name: code-style
 
 on:
   push:
-    paths:
-      - '**.php'
+  pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Checks the code style with Laravel Pint and changes nothing.
+# Run `composer lint` on your machine to fix the style.
 jobs:
-  fix-code-style:
+  pint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      # persist-credentials: true is required so `git-auto-commit-action` below
-      # can push the reformatted files back to the branch.
-      - name: Checkout code # zizmor: ignore[artipacked]
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Cache Composer dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -29,14 +34,10 @@ jobs:
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: 8.4
+          coverage: none
 
       - name: Install dependencies
         run: composer install --no-interaction --no-scripts
 
-      - name: Run Pint
-        run: ./vendor/bin/pint
-
-      - name: Commit changes
-        uses: stefanzweifel/git-auto-commit-action@d0b01107b5db882071f96de5dd4b54961ea93f4c # v7.2.1
-        with:
-          commit_message: Fix styling
+      - name: Check code style
+        run: vendor/bin/pint --test

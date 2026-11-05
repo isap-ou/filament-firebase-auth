@@ -12,7 +12,8 @@ It is for maintainers.
   - a minor release adds features and stays backward compatible,
   - a patch release fixes bugs and stays backward compatible.
 - We do not make breaking changes inside a Filament major. A breaking change waits for the next Filament major.
-- Each plugin major requires exactly one Filament major. Today `composer.json` requires `filament/filament: ^5.0`.
+- Each plugin major requires exactly one Filament major. Today `composer.json` requires `filament/filament: ^5.8.3`.
+  Composer blocks older Filament 5 releases because of security advisories, so CI cannot test them.
   Never widen the constraint to two majors, for example `^5.0|^6.0`.
 - Tags start with `v`, for example `v5.0.0`, `v5.1.0`, `v5.1.1`.
 
@@ -34,14 +35,14 @@ When Filament 6 ships:
 
 Do these steps on the commit that you will tag:
 
-- [ ] All workflows are green: `tests`, `phpstan`, `assets` and `emulator`.
-- [ ] The `fix-code-style` workflow made no new commit.
+- [ ] All workflows are green: `tests`, `phpstan`, `assets`, `code-style` and `emulator`.
+- [ ] If the release changes `.github/workflows` or `.github/dependabot.yml`, the `zizmor` workflow is green too.
 - [ ] The output of `npm run build` is committed in `resources/dist`. The `assets` workflow checks this.
 - [ ] In `CHANGELOG.md`, move the content of `## [Unreleased]` under a new heading `## vX.Y.Z - YYYY-MM-DD`.
       Keep an empty `## [Unreleased]` heading above it.
 - [ ] For a new major version, `UPGRADING.md` has a section for this major.
 - [ ] `composer.json` requires exactly one Filament major.
-- [ ] `composer validate --strict` passes.
+- [ ] `composer validate --strict --no-check-lock` passes. The lock file is not in git, so a local lock can be stale.
 
 ## Release
 
@@ -60,6 +61,18 @@ Do these steps on the commit that you will tag:
 6. Update the plugin page in the Filament author dashboard (https://filamentphp.com/author).
    Check the supported Filament version, the description and the images.
 
+## Dependabot pull requests that change the bundle
+
+A Dependabot pull request that bumps `firebase` or `esbuild` changes `package-lock.json`, but not `resources/dist`.
+The `assets` check then fails. To finish such a pull request:
+
+1. Check out the Dependabot branch.
+2. Run `npm ci && npm run build`. Run `npm ci` with install scripts, and with no `FIREBASE_WEBAPP_CONFIG` in your environment.
+3. Commit `resources/dist` to the same branch, and push.
+4. After the merge, release a patch version, so that users get the new bundle.
+
+A bump of `firebase-tools` only does not change the bundle.
+
 ## Packagist webhook
 
 Packagist must know about each push and each tag.
@@ -71,25 +84,26 @@ Packagist shows a warning on the package page when the webhook does not work.
 The files in this repository cannot set these options. Set them by hand in the repository settings.
 
 - **Required status checks on `main`.** Add a branch protection rule or a ruleset for `main`.
-  Require the jobs of the `tests`, `phpstan` and `assets` workflows.
+  Require the jobs of the `tests`, `phpstan`, `assets`, `code-style` and `emulator` workflows.
   GitHub lists each matrix job by its name, for example `P8.4 - L13.* - prefer-stable - ubuntu-latest` for `tests`,
-  `P8.4 - L13.* - prefer-stable` for `phpstan`, and `assets` for `assets`. Select all of them.
-  Add the `emulator` job when the emulator tests are in place.
+  `P8.4 - L13.* - prefer-stable` for `phpstan`, `assets` for `assets`, `pint` for `code-style` and `emulator` for `emulator`.
+  Select all of them.
   Required checks block a direct push of a commit that has no green checks.
   Merge through a pull request, or let the maintainers bypass the rule.
-- **Workflows that push to `main`.** `update-changelog` and `fix-code-style` push commits to `main` with `GITHUB_TOKEN`.
+- **Workflows that push to `main`.** Only `update-changelog` pushes a commit to `main`, with `GITHUB_TOKEN`.
   A commit that `GITHUB_TOKEN` pushes does not start other workflows, so it never gets green checks.
-  When `main` requires status checks, GitHub refuses these pushes, and the workflow fails.
+  When `main` requires status checks, GitHub refuses this push, and the workflow fails.
   The bypass list of a ruleset accepts roles, teams, GitHub Apps and Dependabot.
-  It does not offer `GITHUB_TOKEN`, so you cannot let these two workflows bypass the rule.
-  Make sure that neither workflow needs to push:
+  It does not offer `GITHUB_TOKEN`, so you cannot let this workflow bypass the rule.
+  Make sure that the workflow does not need to push:
   - Before you tag, move the `Unreleased` notes under the version heading (pre-release checklist).
     Then `update-changelog` finds the heading and makes no change.
-  - Run `composer lint` before you push to `main`. Then `fix-code-style` finds nothing to fix on `main`.
-  - If one of these workflows fails on `main`, make the same change by hand and merge it through a pull request.
+  - If the workflow fails on `main`, make the same change by hand and merge it through a pull request.
 
-  If you want these workflows to push, change them to use a token of your own GitHub App.
+  If you want the workflow to push, change it to use a token of your own GitHub App.
   Then add that app to the bypass list of the ruleset.
+
+  The `code-style` workflow never pushes. It runs `pint --test`. Run `composer lint` on your machine to fix the style.
 - **Signed tags.** Sign each release tag with `git tag -s`.
   Add a tag ruleset for `v*` that blocks the update and the deletion of release tags.
 - **Discussions.** Turn on Discussions with the categories "Q&A" and "Ideas".

@@ -83,7 +83,7 @@ class ResolveLocalUser
     {
         $query = $instance->newQuery()->whereKey($identity->authenticatable_id);
 
-        if ($constraints !== null) {
+        if ($constraints instanceof Closure) {
             $constraints($query);
         }
 
@@ -120,7 +120,7 @@ class ResolveLocalUser
 
     protected function meetsConstraints(Model & Authenticatable $user, ?Closure $constraints): bool
     {
-        if ($constraints === null) {
+        if (! $constraints instanceof Closure) {
             return true;
         }
 

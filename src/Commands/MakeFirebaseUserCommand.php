@@ -3,6 +3,7 @@
 namespace Isapp\FilamentFirebaseAuth\Commands;
 
 use Filament\Commands\MakeUserCommand;
+use Filament\Support\Commands\Exceptions\FailureCommandOutput;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\DeleteFirebaseUser;
@@ -64,11 +65,27 @@ class MakeFirebaseUserCommand extends MakeUserCommand
     }
 
     /**
+     * Stops with exit code 1 and without an exception trace when `createUser()` refuses the account.
+     */
+    public function handle(): int
+    {
+        try {
+            return parent::handle();
+        } catch (FailureCommandOutput) {
+            return self::FAILURE;
+        }
+    }
+
+    /**
      * Finds or creates the Firebase account, then creates the local record and its link.
      *
      * A new account gets `emailVerified = true`, because an admin creates it on purpose.
-     * An existing account keeps its password and its verification.
+     * An existing account keeps its password and its verification. An existing account with an
+     * unverified email is refused, because anyone can create such an account with another
+     * person's email (the rule of `ResolveLocalUser` case 2).
      * When the local step fails, the command deletes the account only if it created that account.
+     *
+     * @throws FailureCommandOutput when the existing account has an unverified email.
      */
     protected function createUser(): Model & Authenticatable
     {
@@ -80,6 +97,12 @@ class MakeFirebaseUserCommand extends MakeUserCommand
 
         [$firebaseUser, $created] = $this->laravel->make(FindOrCreateFirebaseUser::class)
             ->handle($data['email'], $data['password'], $data['name'], verified: true);
+
+        if (! $created && ! $firebaseUser->emailVerified) {
+            $this->components->error(__('filament-firebase-auth::command.unverified_account', ['email' => $data['email']]));
+
+            throw new FailureCommandOutput;
+        }
 
         if (! $created) {
             $this->components->warn(__('filament-firebase-auth::command.existing_account', ['email' => $data['email']]));

@@ -110,6 +110,35 @@ it('links an existing firebase account without changing its password', function 
         ->and(DB::table('admins')->where('id', $admin->getKey())->value('password'))->toBeNull();
 });
 
+it('refuses an existing firebase account with an unverified email', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->once()->with('ada@example.com')
+        ->andReturn(userRecord(['localId' => 'uid-7', 'email' => 'ada@example.com', 'emailVerified' => false]));
+    $firebase->shouldNotReceive('createUser');
+    $firebase->shouldNotReceive('updateUser');
+    $firebase->shouldNotReceive('deleteUser');
+
+    artisan('make:filament-user', makeUserOptions())
+        ->expectsOutputToContain(__('filament-firebase-auth::command.unverified_account', ['email' => 'ada@example.com']))
+        ->doesntExpectOutputToContain('may now log in')
+        ->assertFailed();
+
+    expect(Admin::query()->count())->toBe(0)
+        ->and(FirebaseIdentity::query()->count())->toBe(0);
+});
+
+it('links an existing firebase account with a verified email', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->once()->with('ada@example.com')
+        ->andReturn(userRecord(['localId' => 'uid-7', 'email' => 'ada@example.com', 'emailVerified' => true]));
+    $firebase->shouldNotReceive('createUser');
+    $firebase->shouldNotReceive('deleteUser');
+
+    artisan('make:filament-user', makeUserOptions())->assertSuccessful();
+
+    expect(Admin::query()->where('email', 'ada@example.com')->sole()->firebaseIdentity?->firebase_uid)->toBe('uid-7');
+});
+
 it('deletes only an account it created when the local step fails', function () {
     makeUserFailingLocalStep();
     $firebase = mockFirebase();

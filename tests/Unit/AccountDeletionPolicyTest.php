@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Isapp\FilamentFirebaseAuth\Actions\Accounts\DeleteFirebaseUserIfAllowed;
 use Isapp\FilamentFirebaseAuth\Contracts\DecidesAccountDeletion;
@@ -7,6 +8,7 @@ use Isapp\FilamentFirebaseAuth\Deletion\AccountDeletionPolicy;
 use Isapp\FilamentFirebaseAuth\Enums\DeletionReason;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\Admin;
+use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
 use Kreait\Firebase\Auth\UserRecord;
 use Kreait\Firebase\Exception\Auth\ApiConnectionFailed;
 use Kreait\Firebase\Exception\Auth\UserNotFound;
@@ -61,6 +63,20 @@ it('keeps an account in new_only mode for other reasons', function () {
         ->and($policy->shouldDelete(firebaseUserAged(5, 5), DeletionReason::RecordDeleted))->toBeFalse();
 });
 
+it('keeps an account without a last sign-in in new_only mode', function () {
+    config()->set('filament-firebase-auth.delete_accounts', 'new_only');
+    config()->set('filament-firebase-auth.new_account_window', 60);
+
+    $firebaseUser = UserRecord::fromResponseData([
+        'localId' => 'uid-1',
+        'email' => 'jane@example.com',
+        'createdAt' => (string) now()->subSeconds(5)->getTimestampMs(),
+    ]);
+
+    expect($firebaseUser->metadata->lastLoginAt)->toBeNull()
+        ->and(app(DecidesAccountDeletion::class)->shouldDelete($firebaseUser, DeletionReason::BlockedOnClosedPanel))->toBeFalse();
+});
+
 it('deletes only orphans in orphaned mode', function () {
     config()->set('filament-firebase-auth.delete_accounts', 'orphaned');
     $policy = app(DecidesAccountDeletion::class);
@@ -108,15 +124,57 @@ it('deletes the link and asks the policy when a record is deleted', function () 
     expect(FirebaseIdentity::query()->count())->toBe(0);
 });
 
-it('keeps the firebase account of a deleted record in never mode', function () {
+it('does not call firebase for a deleted record in never mode', function () {
     config()->set('filament-firebase-auth.delete_accounts', 'never');
     $firebase = mockFirebase();
-    $firebase->shouldReceive('getUser')->andReturn(userRecord());
+    $firebase->shouldNotReceive('getUser');
     $firebase->shouldNotReceive('deleteUser');
 
     linkedUser()->delete();
 
     expect(FirebaseIdentity::query()->count())->toBe(0);
+});
+
+it('fails loudly on an unknown delete_accounts value when a record is deleted', function () {
+    config()->set('filament-firebase-auth.delete_accounts', 'sometimes');
+    mockFirebase()->shouldNotReceive('getUser');
+
+    $user = linkedUser();
+
+    expect(fn () => $user->delete())->toThrow(ValueError::class);
+});
+
+it('keeps the firebase account when the record deletion rolls back', function () {
+    config()->set('filament-firebase-auth.delete_accounts', 'orphaned');
+    $firebase = mockFirebase();
+    $firebase->shouldNotReceive('getUser');
+    $firebase->shouldNotReceive('deleteUser');
+
+    $user = linkedUser();
+
+    expect(fn () => DB::transaction(fn () => $user->delete() && throw new RuntimeException('Rolled back')))
+        ->toThrow(RuntimeException::class, 'Rolled back')
+        ->and(User::query()->count())->toBe(1)
+        ->and(FirebaseIdentity::query()->count())->toBe(1);
+});
+
+it('runs the firebase part after the record deletion commits', function () {
+    config()->set('filament-firebase-auth.delete_accounts', 'orphaned');
+    $calls = [];
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord());
+    $firebase->shouldReceive('deleteUser')->once()->with('uid-1')->andReturnUsing(function () use (&$calls): void {
+        $calls[] = 'deleteUser';
+    });
+
+    $user = linkedUser();
+
+    DB::transaction(function () use ($user, &$calls): void {
+        $user->delete();
+        $calls[] = 'deleted';
+    });
+
+    expect($calls)->toBe(['deleted', 'deleteUser']);
 });
 
 it('does not ask the policy when the firebase user is already gone', function () {
@@ -142,8 +200,25 @@ it('deletes the record when firebase is unreachable and logs the uid', function 
         ->and(FirebaseIdentity::query()->count())->toBe(0);
 
     $log->shouldHaveReceived('warning')->once()->with(
-        'The Firebase account of a deleted record was not checked: Firebase failed.',
-        ['uid' => 'uid-1'],
+        'The Firebase part of a record deletion failed.',
+        ['uid' => 'uid-1', 'exception' => ApiConnectionFailed::class],
+    );
+});
+
+it('deletes the record when the firebase part fails with any error and logs the uid', function () {
+    config()->set('filament-firebase-auth.delete_accounts', 'orphaned');
+    $log = Log::spy();
+    mockFirebase()->shouldReceive('getUser')->once()->andThrow(new RuntimeException('No credentials for jane@example.com'));
+
+    $user = linkedUser();
+    $user->delete();
+
+    expect($user->exists)->toBeFalse()
+        ->and(FirebaseIdentity::query()->count())->toBe(0);
+
+    $log->shouldHaveReceived('warning')->once()->with(
+        'The Firebase part of a record deletion failed.',
+        ['uid' => 'uid-1', 'exception' => RuntimeException::class],
     );
 });
 

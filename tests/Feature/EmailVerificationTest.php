@@ -4,6 +4,12 @@ use Filament\Facades\Filament;
 
 use function Pest\Laravel\actingAs;
 
+// The background session check calls Firebase after a panel request. These tests mock Firebase strictly,
+// so they turn the check off. SessionRevalidationTest covers the check.
+beforeEach(function () {
+    config()->set('filament-firebase-auth.revalidate_every', 0);
+});
+
 it('verifies the email in firebase from the filament link', function () {
     $user = linkedUser(verified: false);
     $firebase = mockFirebase();

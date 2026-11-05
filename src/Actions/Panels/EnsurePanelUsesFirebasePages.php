@@ -8,6 +8,7 @@ use Filament\Auth\MultiFactor\Http\Middleware\EnsureMultiFactorAuthenticationIsE
 use Filament\Panel;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Support\Str;
+use Isapp\FilamentFirebaseAuth\Concerns\HasFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Http\Middleware\EnsureMultiFactorAuthenticationIsEnabled;
 use Isapp\FilamentFirebaseAuth\MultiFactor\AppAuthentication;
 use Isapp\FilamentFirebaseAuth\Pages\EditProfile;
@@ -21,6 +22,9 @@ use LogicException;
  * It also stops Filament's own app authentication and required multi-factor middleware.
  * The app authentication checks a local password, and the middleware sends a user without
  * a password to a set-up page that the user cannot complete.
+ *
+ * It also stops a password reset through a broker without the `firebase` driver (Firebase would keep
+ * the old password), and a panel model without the `HasFirebaseIdentity` trait.
  */
 class EnsurePanelUsesFirebasePages
 {
@@ -30,13 +34,17 @@ class EnsurePanelUsesFirebasePages
      * Does nothing when the user provider of the panel guard does not use the `firebase` driver.
      *
      * @throws LogicException when the panel uses a registration or profile page that is not a plugin page,
-     *                        or Filament's own app authentication or required multi-factor middleware.
+     *                        Filament's own app authentication or required multi-factor middleware,
+     *                        a password broker without the `firebase` driver, or a model without the trait.
      */
     public function handle(Panel $panel): void
     {
         if (! $this->usesFirebaseDriver($panel)) {
             return;
         }
+
+        $this->ensureFirebaseModel($panel);
+        $this->ensureFirebasePasswordBroker($panel);
 
         if ($panel->hasRegistration() && ! $this->isPage($panel->getRegistrationRouteAction(), Register::class)) {
             throw new LogicException($this->message(
@@ -89,9 +97,59 @@ class EnsurePanelUsesFirebasePages
         }
     }
 
+    /**
+     * @throws LogicException when the model of the panel provider does not use `HasFirebaseIdentity`.
+     */
+    protected function ensureFirebaseModel(Panel $panel): void
+    {
+        $model = $this->config->get("auth.providers.{$this->providerName($panel)}.model");
+
+        if (is_string($model) && class_exists($model) && in_array(HasFirebaseIdentity::class, class_uses_recursive($model), true)) {
+            return;
+        }
+
+        $current = is_string($model) ? $model : get_debug_type($model);
+
+        throw new LogicException(
+            "The panel [{$panel->getId()}] uses the firebase user provider, but its model [{$current}] does not use the HasFirebaseIdentity trait. "
+            . 'Without it, the model keeps a local password and the session check does nothing. '
+            . 'Add `use \\' . HasFirebaseIdentity::class . ';` to the model.',
+        );
+    }
+
+    /**
+     * Filament uses the default broker when the panel has no `authPasswordBroker()`.
+     *
+     * @throws LogicException when the panel has a password reset and its broker does not use the `firebase` driver.
+     */
+    protected function ensureFirebasePasswordBroker(Panel $panel): void
+    {
+        if (! $panel->hasPasswordReset()) {
+            return;
+        }
+
+        $broker = $panel->getAuthPasswordBroker() ?? $this->config->get('auth.defaults.passwords');
+        $name = is_string($broker) ? $broker : get_debug_type($broker);
+
+        if (is_string($broker) && $this->config->get("auth.passwords.{$broker}.driver") === 'firebase') {
+            return;
+        }
+
+        throw new LogicException(
+            "The panel [{$panel->getId()}] uses the firebase user provider and has a password reset, but the [{$name}] password broker does not use the firebase driver. "
+            . 'Laravel\'s broker would report a reset, and Firebase would keep the old password. '
+            . "Set 'driver' => 'firebase' on a broker in config/auth.php, and select it with ->authPasswordBroker() in the panel configuration.",
+        );
+    }
+
+    protected function providerName(Panel $panel): mixed
+    {
+        return $this->config->get("auth.guards.{$panel->getAuthGuard()}.provider");
+    }
+
     protected function usesFirebaseDriver(Panel $panel): bool
     {
-        $provider = $this->config->get("auth.guards.{$panel->getAuthGuard()}.provider");
+        $provider = $this->providerName($panel);
 
         if (! is_string($provider)) {
             return false;

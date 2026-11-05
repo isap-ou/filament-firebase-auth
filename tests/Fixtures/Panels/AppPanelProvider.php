@@ -36,6 +36,7 @@ class AppPanelProvider extends PanelProvider
             ->registration(Register::class)
             ->profile(EditProfile::class)
             ->emailVerification()
+            ->emailChangeVerification()
             ->passwordReset()
             ->plugin(
                 FilamentFirebaseAuthPlugin::make()

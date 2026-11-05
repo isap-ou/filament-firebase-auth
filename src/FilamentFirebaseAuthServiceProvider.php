@@ -2,6 +2,7 @@
 
 namespace Isapp\FilamentFirebaseAuth;
 
+use Filament\Auth\Http\Requests\EmailChangeVerificationRequest as FilamentEmailChangeVerificationRequest;
 use Filament\FilamentManager;
 use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
@@ -23,6 +24,7 @@ use Isapp\FilamentFirebaseAuth\Contracts\DecidesAccountDeletion;
 use Isapp\FilamentFirebaseAuth\Contracts\SocialSignInMethod;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Isapp\FilamentFirebaseAuth\Deletion\AccountDeletionPolicy;
+use Isapp\FilamentFirebaseAuth\Http\Requests\EmailChangeVerificationRequest;
 use Isapp\FilamentFirebaseAuth\Passwords\FirebasePasswordBrokerManager;
 use Isapp\FilamentFirebaseAuth\SocialSignIn\JsSdkSignIn;
 use Spatie\LaravelPackageTools\Commands\InstallCommand;
@@ -49,6 +51,7 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
     {
         $this->registerActions();
         $this->registerPasswordBroker();
+        $this->registerProfile();
     }
 
     public function packageBooted(): void
@@ -71,6 +74,14 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
         $this->app->scoped(FindFirebaseUser::class);
         $this->app->scoped(FindFirebaseUserByEmail::class);
         $this->app->scoped(CheckFirebasePassword::class);
+    }
+
+    /**
+     * Gives Filament's email-change controller the plugin request, which changes the Firebase email.
+     */
+    private function registerProfile(): void
+    {
+        $this->app->bind(FilamentEmailChangeVerificationRequest::class, EmailChangeVerificationRequest::class);
     }
 
     /**

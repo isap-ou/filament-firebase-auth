@@ -10,8 +10,8 @@ use Isapp\FilamentFirebaseAuth\Enums\DeleteAccounts;
 use Isapp\FilamentFirebaseAuth\Enums\DeletionReason;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Kreait\Firebase\Auth\UserRecord;
-use Kreait\Firebase\Exception\FirebaseException;
 use Psr\Log\LoggerInterface;
+use Throwable;
 
 /**
  * Deletes the local record and its link when the person deletes the account on the profile page.
@@ -59,7 +59,7 @@ class DeleteUserAccount
                 if ($firebaseUser instanceof UserRecord) {
                     $this->deleteFirebaseUserIfAllowed->handle($firebaseUser, DeletionReason::UserDeletedAccount);
                 }
-            } catch (FirebaseException $exception) {
+            } catch (Throwable $exception) {
                 $this->logger->warning('The Firebase part of an account deletion failed.', [
                     'uid' => $uid,
                     'exception' => $exception::class,

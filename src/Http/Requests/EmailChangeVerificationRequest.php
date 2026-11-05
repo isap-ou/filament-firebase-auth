@@ -15,22 +15,23 @@ use Kreait\Firebase\Exception\FirebaseException;
  * Changes the Firebase email when the person opens the link of Filament's email-change verification.
  *
  * The service provider binds Filament's request class to this class, so Filament's
- * `EmailChangeVerificationController` receives it. A record without `HasFirebaseIdentity`
- * gets Filament's behaviour.
+ * `EmailChangeVerificationController` receives it. A record without `HasFirebaseIdentity`,
+ * or without a link (for example on another panel that shares the model), gets Filament's behaviour.
  */
 class EmailChangeVerificationRequest extends FilamentEmailChangeVerificationRequest
 {
     /**
-     * Firebase changes first, then Filament changes the local record.
+     * Filament's own `fulfill()` does not run for a linked record. It marks the email as verified
+     * through the trait, which sends the flag to Firebase while Firebase still has the old email.
      *
-     * Filament's `fulfill()` marks the email as verified, and the trait sends that flag to Firebase.
-     * If Firebase then refused the new email, Firebase would keep the old email with a verified flag
-     * that nobody proved. So Firebase gets the new email and the flag in one call before Filament runs.
-     * When Firebase refuses, nothing changes and the method returns false.
-     *
-     * Two clicks on the same link at the same moment can both change Firebase while only one
-     * changes the record. Both clicks prove the new email. The next sign-in or session check copies
-     * the Firebase email to the record.
+     * The order:
+     * 1. Refuse an email that another local record uses. Firebase does not change then.
+     * 2. Use up the one-time signature, as Filament does. After that, the block link of the old
+     *    email cannot race with the Firebase change, and a second click finds no signature.
+     * 3. Send the new email and the verified flag to Firebase in one call. When Firebase refuses,
+     *    the signature goes back to the cache, nothing changes, and the method returns false.
+     * 4. Save the email on the record and sync the link. The sync sets `email_verified_at`
+     *    from the Firebase answer, so no second Firebase call is needed.
      */
     public function fulfill(): bool
     {
@@ -43,12 +44,11 @@ class EmailChangeVerificationRequest extends FilamentEmailChangeVerificationRequ
         $identity = $user->getRelationValue('firebaseIdentity');
 
         if (! $identity instanceof FirebaseIdentity) {
-            return false;
+            return parent::fulfill();
         }
 
         $newEmail = (string) decrypt($this->route('email'));
 
-        // Filament refuses an email that another local record uses. Firebase must not change then.
         $isEmailTaken = $user::query()
             ->whereKeyNot($user->getKey())
             ->where('email', $newEmail)
@@ -59,32 +59,86 @@ class EmailChangeVerificationRequest extends FilamentEmailChangeVerificationRequ
             return false;
         }
 
+        $consumedKeys = $this->consumeSignature();
+
+        if ($consumedKeys === null) {
+            return false;
+        }
+
         try {
             $firebaseUser = app(ChangeFirebaseEmail::class)->handle($identity->firebase_uid, $newEmail, verified: true);
-
-            $fulfilled = $user->getConnection()->transaction(function () use ($user, $firebaseUser): bool {
-                if (! parent::fulfill()) {
-                    return false;
-                }
-
-                // Firebase revokes the tokens of a user whose email changes. The link stores the new time.
-                app(SyncsLocalUsers::class)->handle($user, $firebaseUser);
-
-                return true;
-            });
         } catch (FirebaseException $exception) {
             logger()->warning('Firebase refused the email change.', [
                 'uid' => $identity->firebase_uid,
                 'exception' => $exception::class,
             ]);
 
+            $this->restoreSignature($consumedKeys);
+
             return false;
         }
 
-        if ($fulfilled) {
-            app(RenewCurrentSession::class)->handle($user);
+        $user->getConnection()->transaction(function () use ($user, $newEmail, $firebaseUser): void {
+            $user->update(['email' => $newEmail]);
+
+            // Firebase revokes the tokens of a user whose email changes. The link stores the new time.
+            app(SyncsLocalUsers::class)->handle($user, $firebaseUser);
+        });
+
+        app(RenewCurrentSession::class)->handle($user);
+
+        return true;
+    }
+
+    /**
+     * Removes the signature from the cache with the same keys as Filament's `fulfill()`.
+     *
+     * @return list<string>|null The removed keys, or null when the signature was not pending
+     *                           or could not be removed.
+     */
+    protected function consumeSignature(): ?array
+    {
+        $signature = $this->query('signature');
+        $cache = cache();
+        $wasPending = false;
+        $wasRemoved = true;
+        $consumedKeys = [];
+
+        foreach (["filament:auth:email_change:verification:{$signature}", $signature] as $cacheKey) {
+            if (! is_string($cacheKey) || ! $cache->has($cacheKey)) {
+                continue;
+            }
+
+            $wasPending = true;
+
+            if ((! $cache->forget($cacheKey)) && ($cache->get($cacheKey) !== null)) {
+                $wasRemoved = false;
+
+                continue;
+            }
+
+            $consumedKeys[] = $cacheKey;
         }
 
-        return $fulfilled;
+        if (! $wasPending || ! $wasRemoved) {
+            $this->restoreSignature($consumedKeys);
+
+            return null;
+        }
+
+        return $consumedKeys;
+    }
+
+    /**
+     * Puts the signature back, with the lifetime that Filament gives it (`EditProfile::sendEmailChangeVerification()`).
+     * The signed URL has its own expiry, so the link never lives longer than Filament allows.
+     *
+     * @param  list<string>  $cacheKeys
+     */
+    protected function restoreSignature(array $cacheKeys): void
+    {
+        foreach ($cacheKeys as $cacheKey) {
+            cache()->put($cacheKey, true, ttl: now()->addHour());
+        }
     }
 }

@@ -2,7 +2,6 @@
 
 namespace Isapp\FilamentFirebaseAuth\Actions\Firebase;
 
-use Kreait\Firebase\Auth\UserRecord;
 use Kreait\Firebase\Contract\Auth;
 
 /**
@@ -15,14 +14,10 @@ class RevokeFirebaseTokens
     public function __construct(protected Auth $auth) {}
 
     /**
-     * Returns the user as Firebase stores it after the revocation, with the new `tokensValidAfterTime`.
-     * It reads the user directly, because `FindFirebaseUser` can hold the record from before
-     * the revocation. Firebase exceptions go to the caller.
+     * Firebase exceptions go to the caller.
      */
-    public function handle(string $uid): UserRecord
+    public function handle(string $uid): void
     {
         $this->auth->revokeRefreshTokens($uid);
-
-        return $this->auth->getUser($uid);
     }
 }

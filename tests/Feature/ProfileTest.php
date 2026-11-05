@@ -1,21 +1,28 @@
 <?php
 
 use Filament\Auth\Http\Requests\EmailChangeVerificationRequest as FilamentEmailChangeVerificationRequest;
+use Filament\Auth\Notifications\NoticeOfEmailChangeRequest;
 use Filament\Auth\Notifications\VerifyEmailChange;
 use Filament\Facades\Filament;
 use Illuminate\Auth\SessionGuard;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Cookie;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
+use Isapp\FilamentFirebaseAuth\Actions\Accounts\RenewCurrentSession;
 use Isapp\FilamentFirebaseAuth\Contracts\DecidesAccountDeletion;
+use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Isapp\FilamentFirebaseAuth\Enums\DeletionReason;
 use Isapp\FilamentFirebaseAuth\Http\Requests\EmailChangeVerificationRequest;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Pages\EditProfile;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\Admin;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
+use Kreait\Firebase\Exception\Auth\ApiConnectionFailed;
 use Kreait\Firebase\Exception\Auth\EmailExists;
+use Kreait\Firebase\Exception\Auth\WeakPassword;
+use League\Uri\Components\Query;
 use Livewire\Features\SupportTesting\Testable;
 use Mockery\MockInterface;
 
@@ -213,9 +220,8 @@ it('changes the email in firebase after the verification link', function () {
     $firebase->shouldReceive('updateUser')->once()
         ->with('uid-1', ['email' => 'new@example.com', 'emailVerified' => true])
         ->andReturn(userRecord(['email' => 'new@example.com']));
-    // Filament's request marks the email as verified through the trait.
-    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['emailVerified' => true])
-        ->andReturn(userRecord(['email' => 'new@example.com']));
+    // The plugin request does not run Filament's `fulfill()`, so no second Firebase call marks the email.
+    $firebase->shouldNotReceive('changeUserEmail');
 
     $url = profileRequestEmailChange($user, 'new@example.com');
 
@@ -399,6 +405,8 @@ it('revokes firebase tokens on log out everywhere', function () {
     $user = linkedUser();
     $validSince = now()->addMinute()->startOfSecond();
     $firebase = mockFirebase();
+    $firebase->shouldReceive('signInWithEmailAndPassword')->with('jane@example.com', 'secret')
+        ->andReturn(signInResult('uid-1'));
     $firebase->shouldReceive('revokeRefreshTokens')->once()->with('uid-1');
     // The page reads the user first. The action reads it again after the revocation.
     $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(
@@ -407,7 +415,7 @@ it('revokes firebase tokens on log out everywhere', function () {
     );
 
     profilePage($user)
-        ->callAction('logoutEverywhere')
+        ->callAction('logoutEverywhere', data: ['currentPassword' => 'secret'])
         ->assertHasNoActionErrors();
 
     $user->refresh();
@@ -428,3 +436,244 @@ it('renders the account actions on the profile page', function () {
         ->assertSee(__('filament-firebase-auth::profile.actions.logout_other_sessions.label'))
         ->assertSee(__('filament-firebase-auth::profile.actions.delete_account.label'));
 });
+
+it('refuses the email change after the block link', function () {
+    $user = linkedUser(verified: false);
+    $firebase = profileFirebase();
+    $firebase->shouldNotReceive('updateUser');
+
+    Notification::fake();
+
+    profilePage($user)
+        ->fillForm(['email' => 'new@example.com', 'currentPassword' => 'secret'])
+        ->call('save')
+        ->assertHasNoFormErrors();
+
+    $verifyUrl = null;
+    $blockUrl = null;
+
+    Notification::assertSentOnDemand(VerifyEmailChange::class, function (VerifyEmailChange $notification) use (&$verifyUrl): bool {
+        $verifyUrl = $notification->url;
+
+        return true;
+    });
+    Notification::assertSentTo($user, NoticeOfEmailChangeRequest::class, function (NoticeOfEmailChangeRequest $notification) use (&$blockUrl): bool {
+        $blockUrl = $notification->blockVerificationUrl;
+
+        return true;
+    });
+
+    actingAs($user, 'app')->get((string) $blockUrl)->assertRedirect();
+    actingAs($user, 'app')->get((string) $verifyUrl)->assertForbidden();
+
+    expect($user->refresh()->getAttribute('email'))->toBe('jane@example.com');
+});
+
+it('keeps the verification link usable when firebase refuses the email', function () {
+    $user = linkedUser(verified: false);
+    $firebase = profileFirebase();
+    $firebase->shouldReceive('updateUser')->once()
+        ->with('uid-1', ['email' => 'new@example.com', 'emailVerified' => true])
+        ->andThrow(new ApiConnectionFailed('Firebase is down'));
+    $firebase->shouldReceive('updateUser')->once()
+        ->with('uid-1', ['email' => 'new@example.com', 'emailVerified' => true])
+        ->andReturn(userRecord(['email' => 'new@example.com']));
+
+    $url = profileRequestEmailChange($user, 'new@example.com');
+
+    actingAs($user, 'app')->get($url)->assertRedirect();
+
+    expect($user->refresh()->getAttribute('email'))->toBe('jane@example.com');
+
+    // The same link works once Firebase answers again.
+    actingAs($user, 'app')->get($url)->assertRedirect();
+
+    expect($user->refresh()->getAttribute('email'))->toBe('new@example.com')
+        ->and($user->firebaseIdentity?->email_verified_at)->not->toBeNull();
+});
+
+it('uses filament for a record without a link', function () {
+    $user = User::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+    $firebase = mockFirebase();
+    $firebase->shouldNotReceive('updateUser');
+    Filament::setCurrentPanel('app');
+    $url = Filament::getVerifyEmailChangeUrl($user, 'new@example.com');
+    $signature = Query::new($url)->get('signature');
+    cache()->put("filament:auth:email_change:verification:{$signature}", true, ttl: now()->addHour());
+
+    actingAs($user, 'app')->get($url)->assertRedirect();
+
+    expect($user->refresh()->getAttribute('email'))->toBe('new@example.com');
+});
+
+it('changes the email back in firebase when the password change fails', function () {
+    $admin = profileLinkedAdmin();
+    $firebase = profileFirebase();
+    $firebase->shouldReceive('updateUser')->once()
+        ->with('uid-1', ['email' => 'new@example.com', 'emailVerified' => false])
+        ->andReturn(userRecord(['email' => 'new@example.com', 'emailVerified' => false]));
+    $firebase->shouldReceive('changeUserPassword')->once()->andThrow(new WeakPassword('WEAK_PASSWORD'));
+    $firebase->shouldReceive('updateUser')->once()
+        ->with('uid-1', ['email' => 'jane@example.com', 'emailVerified' => true])
+        ->andReturn(userRecord());
+
+    profilePage($admin, 'admin')
+        ->fillForm([
+            'email' => 'new@example.com',
+            'password' => 'new-secret-123',
+            'passwordConfirmation' => 'new-secret-123',
+            'currentPassword' => 'secret',
+        ])
+        ->call('save')
+        ->assertHasFormErrors(['password' => __('filament-firebase-auth::profile.messages.firebase_failed')]);
+
+    expect($admin->refresh()->getAttribute('email'))->toBe('jane@example.com');
+});
+
+it('treats an email with other letter case as unchanged', function () {
+    $admin = profileLinkedAdmin();
+    $firebase = profileFirebase();
+    $firebase->shouldNotReceive('updateUser');
+
+    profilePage($admin, 'admin')
+        ->fillForm(['email' => 'Jane@Example.com'])
+        ->call('save')
+        ->assertHasNoFormErrors();
+
+    expect($admin->refresh()->getAttribute('email'))->toBe('jane@example.com');
+});
+
+it('writes a changed name to firebase', function () {
+    $user = linkedUser();
+    $firebase = profileFirebase();
+    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['displayName' => 'Jane Doe'])
+        ->andReturn(userRecord(['displayName' => 'Jane Doe']));
+
+    profilePage($user)
+        ->fillForm(['name' => 'Jane Doe'])
+        ->call('save')
+        ->assertHasNoFormErrors();
+
+    // The sync of the next sign-in reads the Firebase name, which is now the new name.
+    app(SyncsLocalUsers::class)->handle($user->refresh(), userRecord(['displayName' => 'Jane Doe']));
+
+    expect($user->refresh()->getAttribute('name'))->toBe('Jane Doe');
+});
+
+it('checks the current password against the firebase email of the link', function () {
+    $user = linkedUser(email: 'old@example.com');
+    $firebase = profileFirebase();
+    $firebase->shouldNotReceive('signInWithEmailAndPassword')->with('old@example.com', Mockery::any());
+    $firebase->shouldReceive('changeUserPassword')->once()->andReturn(userRecord());
+
+    profilePage($user)
+        ->fillForm([
+            'password' => 'new-secret-123',
+            'passwordConfirmation' => 'new-secret-123',
+            'currentPassword' => 'secret',
+        ])
+        ->call('save')
+        ->assertHasNoFormErrors();
+});
+
+it('shows the password fields when firebase is down', function () {
+    $user = linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUser')->andThrow(new ApiConnectionFailed('Firebase is down'));
+    $firebase->shouldNotReceive('changeUserPassword');
+
+    profilePage($user)
+        ->assertFormFieldVisible('password')
+        ->assertFormFieldEnabled('email')
+        ->fillForm([
+            'password' => 'new-secret-123',
+            'passwordConfirmation' => 'new-secret-123',
+            'currentPassword' => 'secret',
+        ])
+        ->call('save')
+        ->assertHasFormErrors(['currentPassword' => __('filament-firebase-auth::profile.messages.firebase_unavailable')]);
+});
+
+it('limits the attempts of the account actions', function (string $action) {
+    config()->set('filament-firebase-auth.global_logout', true);
+    $user = linkedUser();
+    $firebase = profileFirebase();
+    $firebase->shouldNotReceive('revokeRefreshTokens');
+    $firebase->shouldNotReceive('deleteUser');
+    // A failed attempt keeps the modal open, so each attempt submits the mounted action again.
+    $page = profilePage($user)->mountAction($action);
+
+    foreach (range(1, 5) as $attempt) {
+        $page->setActionData(['currentPassword' => 'wrong'])
+            ->callMountedAction()
+            ->assertHasActionErrors(['currentPassword']);
+    }
+
+    // The sixth attempt is refused before the password check, even with the right password.
+    $page->setActionData(['currentPassword' => 'secret'])
+        ->callMountedAction()
+        ->assertNotified();
+
+    expect(User::query()->count())->toBe(1)
+        ->and($user->firebaseIdentity?->fresh()?->session_salt)->toBeNull()
+        ->and(auth('app')->check())->toBeTrue();
+})->with(['logoutOtherSessions', 'logoutEverywhere', 'deleteAccount']);
+
+it('needs the current password to log out other sessions', function () {
+    $user = linkedUser();
+    profileFirebase();
+
+    profilePage($user)
+        ->callAction('logoutOtherSessions', data: ['currentPassword' => 'wrong'])
+        ->assertHasActionErrors(['currentPassword' => __('validation.current_password')]);
+
+    expect($user->firebaseIdentity?->fresh()?->session_salt)->toBeNull();
+});
+
+it('deletes the account of a google only user without a password', function () {
+    $user = linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord([
+        'providerUserInfo' => [
+            ['providerId' => 'google.com', 'rawId' => 'google-1', 'email' => 'jane@example.com'],
+        ],
+    ]));
+    $firebase->shouldNotReceive('signInWithEmailAndPassword');
+
+    profilePage($user)
+        ->callAction('deleteAccount')
+        ->assertHasNoActionErrors()
+        ->assertRedirect(Filament::getLoginUrl());
+
+    expect(User::query()->count())->toBe(0);
+});
+
+it('keeps the session when firebase fails on log out everywhere', function () {
+    config()->set('filament-firebase-auth.global_logout', true);
+    $user = linkedUser();
+    $firebase = profileFirebase();
+    $firebase->shouldReceive('revokeRefreshTokens')->once()->andThrow(new ApiConnectionFailed('Firebase is down'));
+
+    profilePage($user)
+        ->callAction('logoutEverywhere', data: ['currentPassword' => 'secret'])
+        ->assertNotified(__('filament-firebase-auth::profile.messages.firebase_failed'));
+
+    expect($user->firebaseIdentity?->fresh()?->tokens_valid_after)->toBeNull()
+        ->and(auth('app')->id())->toBe($user->getKey());
+});
+
+it('renews the remember cookie when the request has one', function (bool $hasCookie) {
+    $user = linkedUser();
+    Filament::setCurrentPanel('app');
+    actingAs($user, 'app');
+    $guard = profileGuard();
+
+    if ($hasCookie) {
+        request()->cookies->set($guard->getRecallerName(), 'old');
+    }
+
+    app(RenewCurrentSession::class)->handle($user);
+
+    expect(Cookie::hasQueued($guard->getRecallerName()))->toBe($hasCookie)
+        ->and(session('password_hash_app'))->toBe(profileSessionHash($user));
+})->with(['with a remember cookie' => true, 'without a remember cookie' => false]);

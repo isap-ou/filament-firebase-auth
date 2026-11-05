@@ -22,7 +22,10 @@ use Isapp\FilamentFirebaseAuth\Actions\Accounts\RenewCurrentSession;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\ChangeFirebaseEmail;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\ChangeFirebasePassword;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\CheckFirebasePassword;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\FetchFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\RevokeFirebaseTokens;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\SetFirebaseDisplayName;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Kreait\Firebase\Auth\UserRecord;
@@ -40,6 +43,12 @@ use SensitiveParameter;
  */
 class EditProfile extends FilamentEditProfile
 {
+    /**
+     * The answer of `userHasFirebasePasswordProvider()` for this request. Livewire does not keep
+     * protected properties between requests.
+     */
+    protected ?bool $firebasePasswordProvider = null;
+
     #[Unexposed]
     public function content(Schema $schema): Schema
     {
@@ -96,7 +105,7 @@ class EditProfile extends FilamentEditProfile
             ->rule($this->getFirebaseCurrentPasswordRule())
             ->revealable(filament()->arePasswordsRevealable())
             ->required()
-            ->visible(fn (Get $get): bool => filled($get('password')) || ($get('email') !== $this->getUser()->getAttributeValue('email')))
+            ->visible(fn (Get $get): bool => filled($get('password')) || (! $this->isSameEmail($get('email'), $this->getUser()->getAttributeValue('email'))))
             ->dehydrated(false);
     }
 
@@ -137,13 +146,19 @@ class EditProfile extends FilamentEditProfile
     protected function checkFirebaseCurrentPassword(mixed $password): ?string
     {
         $uid = $this->getFirebaseIdentity()?->firebase_uid;
-        $email = $this->getUser()->getAttributeValue('email');
 
-        if ($uid === null || ! is_string($email) || ! is_string($password) || $password === '') {
+        if ($uid === null || ! is_string($password) || $password === '') {
             return __('validation.current_password');
         }
 
         try {
+            // The password belongs to the Firebase email of the linked user. The local email can differ.
+            $email = app(FindFirebaseUser::class)->handle($uid)?->email;
+
+            if ($email === null) {
+                return __('validation.current_password');
+            }
+
             $firebaseUser = app(CheckFirebasePassword::class)->handle($email, $password);
         } catch (FirebaseException $exception) {
             logger()->warning('Firebase could not check the current password.', [
@@ -173,7 +188,9 @@ class EditProfile extends FilamentEditProfile
     }
 
     /**
-     * Firebase stores the new email and the new password. The local record never stores a password.
+     * Firebase stores the new name, the new email and the new password. The local record never
+     * stores a password. Firebase is the source of truth for the name, so the sync on the next
+     * sign-in keeps the new name.
      *
      * Filament hashes only the copy of the state that `getState()` returns, so the clear password
      * comes from `$this->data`. With Filament's email-change verification, Filament sends the
@@ -185,26 +202,43 @@ class EditProfile extends FilamentEditProfile
     {
         unset($data['password']);
 
+        // Firebase stores emails in lower case. A change of case only is no change.
+        if ($this->isSameEmail($data['email'] ?? null, $record->getAttributeValue('email'))) {
+            unset($data['email']);
+        }
+
         $identity = $this->getFirebaseIdentity();
 
-        if (! $identity instanceof FirebaseIdentity || ! $this->userHasFirebasePasswordProvider()) {
-            // The form disables the email of a user without a password. A changed request must not change it either.
+        if (! $identity instanceof FirebaseIdentity) {
             unset($data['email']);
 
             return parent::handleRecordUpdate($record, $data);
         }
 
-        $firebaseUser = $this->updateFirebaseUser($identity->firebase_uid, $record, $data);
+        // The form hides the password and disables the email of a user without a password.
+        // A changed request must not change them either.
+        $changesCredentials = $this->userHasFirebasePasswordProvider();
 
-        if ($firebaseUser instanceof UserRecord) {
-            // Firebase revokes the tokens on a password or email change. The link stores the new time.
-            app(SyncsLocalUsers::class)->handle($this->getUser(), $firebaseUser);
+        if (! $changesCredentials) {
+            unset($data['email']);
         }
+
+        $firebaseUser = $this->updateFirebaseUser($identity, $record, $data, $changesCredentials);
+
+        if (! $firebaseUser instanceof UserRecord) {
+            return parent::handleRecordUpdate($record, $data);
+        }
+
+        $user = $this->getUser();
+        $fingerprint = $user->getAuthPassword();
+
+        // Firebase revokes the tokens on a password or email change. The link stores the new time.
+        app(SyncsLocalUsers::class)->handle($user, $firebaseUser);
 
         $record = parent::handleRecordUpdate($record, $data);
 
-        if ($firebaseUser instanceof UserRecord) {
-            app(RenewCurrentSession::class)->handle($this->getUser());
+        if ($user->getAuthPassword() !== $fingerprint) {
+            app(RenewCurrentSession::class)->handle($user);
         }
 
         return $record;
@@ -213,47 +247,89 @@ class EditProfile extends FilamentEditProfile
     /**
      * Returns the Firebase user after the last change, or null when nothing changed in Firebase.
      *
-     * The email changes first: Firebase refuses an email more often than a password,
-     * and then nothing has changed in Firebase.
+     * The order is email, name, password. Firebase refuses an email more often than the rest.
+     * When a later call fails after the email changed, the email changes back in Firebase.
+     * A new password cannot change back, so it goes last.
      *
      * @param  array<string, mixed>  $data
      *
      * @throws ValidationException when Firebase refuses the change.
      */
-    protected function updateFirebaseUser(string $uid, Model $record, #[SensitiveParameter] array $data): ?UserRecord
+    protected function updateFirebaseUser(FirebaseIdentity $identity, Model $record, #[SensitiveParameter] array $data, bool $changesCredentials): ?UserRecord
     {
+        $uid = $identity->firebase_uid;
         $firebaseUser = null;
-        $field = 'email';
-        $email = $data['email'] ?? null;
-        $password = $this->data['password'] ?? null;
+        $oldEmail = $record->getAttributeValue('email');
+        $email = $changesCredentials ? ($data['email'] ?? null) : null;
+        $name = $data['name'] ?? null;
+        $password = $changesCredentials ? ($this->data['password'] ?? null) : null;
+        $emailChanged = false;
 
-        try {
-            if (! Filament::hasEmailChangeVerification() && is_string($email) && $email !== $record->getAttributeValue('email')) {
+        if (! Filament::hasEmailChangeVerification() && is_string($email)) {
+            try {
                 // Nobody proved the new email, so Firebase must not keep the verified flag.
                 $firebaseUser = app(ChangeFirebaseEmail::class)->handle($uid, $email, verified: false);
+            } catch (FirebaseException $exception) {
+                throw $this->firebaseValidationException($exception, $uid, 'email');
+            }
+
+            $emailChanged = true;
+        }
+
+        $field = 'name';
+
+        try {
+            if (is_string($name) && $name !== '' && $name !== $record->getAttributeValue('name')) {
+                $firebaseUser = app(SetFirebaseDisplayName::class)->handle($uid, $name);
             }
 
             if (is_string($password) && $password !== '') {
                 $field = 'password';
                 $firebaseUser = app(ChangeFirebasePassword::class)->handle($uid, $password);
             }
-        } catch (EmailExists) {
-            throw ValidationException::withMessages([
-                'data.email' => __('filament-firebase-auth::profile.messages.email_exists'),
-            ]);
         } catch (FirebaseException $exception) {
-            logger()->warning('Firebase refused a profile change.', [
-                'uid' => $uid,
-                'field' => $field,
-                'exception' => $exception::class,
-            ]);
+            if ($emailChanged && is_string($oldEmail)) {
+                $this->restoreFirebaseEmail($identity, $oldEmail);
+            }
 
-            throw ValidationException::withMessages([
-                "data.{$field}" => __('filament-firebase-auth::profile.messages.firebase_failed'),
-            ]);
+            throw $this->firebaseValidationException($exception, $uid, $field);
         }
 
         return $firebaseUser;
+    }
+
+    protected function firebaseValidationException(FirebaseException $exception, string $uid, string $field): ValidationException
+    {
+        if ($exception instanceof EmailExists) {
+            return ValidationException::withMessages([
+                'data.email' => __('filament-firebase-auth::profile.messages.email_exists'),
+            ]);
+        }
+
+        logger()->warning('Firebase refused a profile change.', [
+            'uid' => $uid,
+            'field' => $field,
+            'exception' => $exception::class,
+        ]);
+
+        return ValidationException::withMessages([
+            "data.{$field}" => __('filament-firebase-auth::profile.messages.firebase_failed'),
+        ]);
+    }
+
+    /**
+     * Gives Firebase the old email and the old verified flag of the link again.
+     */
+    protected function restoreFirebaseEmail(FirebaseIdentity $identity, string $oldEmail): void
+    {
+        try {
+            app(ChangeFirebaseEmail::class)->handle($identity->firebase_uid, $oldEmail, verified: $identity->email_verified_at !== null);
+        } catch (FirebaseException $exception) {
+            logger()->error('Firebase could not restore the email after a failed profile change.', [
+                'uid' => $identity->firebase_uid,
+                'exception' => $exception::class,
+            ]);
+        }
     }
 
     /**
@@ -269,6 +345,7 @@ class EditProfile extends FilamentEditProfile
             ->schema([
                 $this->getFirebaseCurrentPasswordActionComponent(),
             ])
+            ->rateLimit(5)
             ->action(function (): void {
                 $user = $this->getUser();
 
@@ -299,6 +376,10 @@ class EditProfile extends FilamentEditProfile
             ->visible(fn (): bool => config()->boolean('filament-firebase-auth.global_logout'))
             ->requiresConfirmation()
             ->modalDescription(__('filament-firebase-auth::profile.actions.logout_everywhere.modal_description'))
+            ->schema([
+                $this->getFirebaseCurrentPasswordActionComponent(),
+            ])
+            ->rateLimit(5)
             ->action(function (): void {
                 $user = $this->getUser();
                 $identity = $this->getFirebaseIdentity();
@@ -310,7 +391,10 @@ class EditProfile extends FilamentEditProfile
                 }
 
                 try {
-                    $firebaseUser = app(RevokeFirebaseTokens::class)->handle($identity->firebase_uid);
+                    app(RevokeFirebaseTokens::class)->handle($identity->firebase_uid);
+
+                    // `FindFirebaseUser` can hold the record from before the revocation.
+                    $firebaseUser = app(FetchFirebaseUser::class)->handle($identity->firebase_uid);
                 } catch (FirebaseException $exception) {
                     logger()->warning('Firebase could not revoke the tokens.', [
                         'uid' => $identity->firebase_uid,
@@ -318,6 +402,12 @@ class EditProfile extends FilamentEditProfile
                     ]);
 
                     $this->sendFirebaseNotification('filament-firebase-auth::profile.messages.firebase_failed', success: false);
+
+                    return;
+                }
+
+                if (! $firebaseUser instanceof UserRecord) {
+                    $this->sendFirebaseNotification('filament-firebase-auth::profile.messages.no_link', success: false);
 
                     return;
                 }
@@ -344,6 +434,7 @@ class EditProfile extends FilamentEditProfile
             ->schema([
                 $this->getFirebaseCurrentPasswordActionComponent(),
             ])
+            ->rateLimit(5)
             ->action(function (): void {
                 $user = $this->getUser();
 
@@ -360,11 +451,41 @@ class EditProfile extends FilamentEditProfile
             });
     }
 
+    /**
+     * When Firebase cannot answer, the page shows the password fields. The Firebase check of the
+     * current password then fails with a clear message, so nothing changes. The page never hides
+     * the fields because of an outage.
+     */
     protected function userHasFirebasePasswordProvider(): bool
     {
+        if ($this->firebasePasswordProvider !== null) {
+            return $this->firebasePasswordProvider;
+        }
+
         $user = $this->getUser();
 
-        return method_exists($user, 'hasFirebasePasswordProvider') && $user->hasFirebasePasswordProvider();
+        if (! method_exists($user, 'hasFirebasePasswordProvider')) {
+            return $this->firebasePasswordProvider = false;
+        }
+
+        try {
+            return $this->firebasePasswordProvider = $user->hasFirebasePasswordProvider();
+        } catch (FirebaseException $exception) {
+            logger()->warning('Firebase could not tell if the user has a password.', [
+                'exception' => $exception::class,
+            ]);
+
+            return $this->firebasePasswordProvider = true;
+        }
+    }
+
+    protected function isSameEmail(mixed $email, mixed $otherEmail): bool
+    {
+        if (! is_string($email) || ! is_string($otherEmail)) {
+            return $email === $otherEmail;
+        }
+
+        return mb_strtolower($email) === mb_strtolower($otherEmail);
     }
 
     protected function getFirebaseIdentity(): ?FirebaseIdentity

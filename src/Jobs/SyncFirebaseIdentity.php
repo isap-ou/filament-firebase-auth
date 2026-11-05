@@ -22,7 +22,7 @@ use Psr\Log\LoggerInterface;
  * A changed link changes the session fingerprint (`HasFirebaseIdentity::getAuthPassword()`).
  * Laravel's `AuthenticateSession` then logs the session out on its next request.
  *
- * Without a queue, the job runs in the request process after the response. The scoped
+ * Without a queue (or on a `sync` queue connection), the job runs in the request process. The scoped
  * `FindFirebaseUser` can then hold the record from before a change in that request.
  * The job therefore reads Firebase with `FetchFirebaseUser`, which never remembers a record.
  */

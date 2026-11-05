@@ -48,7 +48,9 @@ class FirebaseUserProvider extends EloquentUserProvider
      *
      * A new record comes back unsaved. `validateCredentials()` saves it after the password check.
      * An unknown email or a blocked sign-in returns null. The password check still runs, so every
-     * attempt makes the same number of Firebase calls and takes about the same time.
+     * attempt with a wrong password makes the same Firebase calls (one lookup, one password check)
+     * and takes about the same time. A correct password reads the proven user once more. Only a
+     * caller who knows the password sees that difference.
      * On a closed panel, the deletion policy may then delete the Firebase account,
      * but only after Firebase proved the password.
      *
@@ -214,7 +216,7 @@ class FirebaseUserProvider extends EloquentUserProvider
 
     /**
      * Runs the deletion policy only when a closed panel blocked a Firebase user without a record.
-     * The caller gives the Firebase user only after Firebase proved the password (Review Focus 1).
+     * The caller gives the Firebase user only after Firebase proved the password.
      */
     protected function deleteIfBlockedOnClosedPanel(UserRecord $firebaseUser, UserRecord $proven): void
     {

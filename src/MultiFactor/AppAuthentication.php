@@ -14,6 +14,7 @@ use Isapp\FilamentFirebaseAuth\Actions\Accounts\DetectUserWithoutPassword;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\CheckFirebasePassword;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
 use Kreait\Firebase\Exception\FirebaseException;
+use LogicException;
 use Psr\Log\LoggerInterface;
 use SensitiveParameter;
 
@@ -24,8 +25,9 @@ use SensitiveParameter;
  * The UI is Filament's own. Two things change:
  * - Firebase checks the password of the set-up, disable and recovery code actions.
  *   Filament's `current_password` rule compares a local hash, and the plugin stores none.
- * - A user without the Firebase `password` provider gets no management actions. That user signs
- *   in through a social provider, and the social provider owns the second factor.
+ * - A linked user whose Firebase user has no `password` provider gets no management actions.
+ *   That user signs in through a social provider, and the social provider owns the second factor.
+ *   Every other user (also when Firebase cannot answer) gets Filament's management actions.
  */
 class AppAuthentication extends FilamentAppAuthentication
 {
@@ -49,6 +51,10 @@ class AppAuthentication extends FilamentAppAuthentication
      * their rules after that. Everything else (the UI, the rate limits) stays Filament's.
      *
      * @return array<Action>
+     *
+     * @throws LogicException when Filament creates no password field, or a password field without
+     *                        the `current_password` rule. A future Filament change then fails loudly
+     *                        and never falls back to a check of a local hash.
      */
     public function getActions(): array
     {
@@ -58,12 +64,18 @@ class AppAuthentication extends FilamentAppAuthentication
             function (TextInput $input) use (&$inputs): void {
                 $inputs[] = $input;
             },
-            during: fn (): array => parent::getActions(),
+            during: fn (): array => $this->getFilamentActions(),
         );
 
-        foreach ($inputs as $input) {
-            if ($input->getName() === 'password') {
-                $this->useFirebasePasswordCheck($input);
+        $passwordInputs = array_filter($inputs, static fn (TextInput $input): bool => $input->getName() === 'password');
+
+        if ($passwordInputs === []) {
+            throw new LogicException("Filament's app authentication actions have no password field. The plugin cannot put its Firebase password check in them.");
+        }
+
+        foreach ($passwordInputs as $input) {
+            if (! $this->useFirebasePasswordCheck($input)) {
+                throw new LogicException("A password field of Filament's app authentication actions has no current_password rule. The plugin cannot replace the local password check with its Firebase password check.");
             }
         }
 
@@ -71,17 +83,36 @@ class AppAuthentication extends FilamentAppAuthentication
     }
 
     /**
-     * Replaces the `current_password` rule of the field with the Firebase check.
+     * Filament's own actions.
+     *
+     * @return array<Action>
      */
-    protected function useFirebasePasswordCheck(TextInput $input): void
+    protected function getFilamentActions(): array
+    {
+        return parent::getActions();
+    }
+
+    /**
+     * Replaces the `current_password` rule of the field with the Firebase check.
+     * Returns false when the field has no `current_password` rule. The field then stays unchanged.
+     */
+    protected function useFirebasePasswordCheck(TextInput $input): bool
     {
         // Filament has no public method that removes a rule. The closure runs in the scope of the field.
-        Closure::bind(static function (TextInput $input): void {
+        $removed = Closure::bind(static function (TextInput $input): int {
+            $count = count($input->rules);
+
             $input->rules = array_values(array_filter(
                 $input->rules,
                 static fn (array $rule): bool => ! is_string($rule[0]) || ! str_starts_with($rule[0], 'current_password'),
             ));
+
+            return $count - count($input->rules);
         }, null, TextInput::class)($input);
+
+        if ($removed === 0) {
+            return false;
+        }
 
         // Filament evaluates the outer closure. Laravel's validator calls the inner closure.
         $input->rule(fn (): Closure => function (string $attribute, #[SensitiveParameter] mixed $value, Closure $fail): void {
@@ -91,6 +122,8 @@ class AppAuthentication extends FilamentAppAuthentication
                 $fail($message);
             }
         });
+
+        return true;
     }
 
     /**

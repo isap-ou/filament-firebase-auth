@@ -1,15 +1,20 @@
 <?php
 
+use Filament\Actions\Action;
 use Filament\Actions\Testing\TestAction;
 use Filament\Auth\Pages\Login;
 use Filament\Facades\Filament;
 use Filament\FilamentServiceProvider;
+use Filament\Forms\Components\TextInput;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use Isapp\FilamentFirebaseAuth\Http\Middleware\EnsureMultiFactorAuthenticationIsEnabled;
 use Isapp\FilamentFirebaseAuth\MultiFactor\AppAuthentication;
 use Isapp\FilamentFirebaseAuth\Pages\EditProfile;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
 use Kreait\Firebase\Auth\UserRecord;
 use Kreait\Firebase\Exception\Auth\ApiConnectionFailed;
+use Kreait\Firebase\Exception\Auth\UserNotFound;
 use Lcobucci\JWT\Token\DataSet;
 use Lcobucci\JWT\Token\Plain;
 use Lcobucci\JWT\Token\Signature;
@@ -17,6 +22,7 @@ use Lcobucci\JWT\UnencryptedToken;
 use Livewire\Features\SupportTesting\Testable;
 use Mockery\MockInterface;
 use PragmaRX\Google2FAQRCode\Google2FA;
+use Symfony\Component\HttpFoundation\Response;
 
 use function Pest\Laravel\actingAs;
 use function Pest\Laravel\postJson;
@@ -138,6 +144,47 @@ function multiFactorProvider(): AppAuthentication
     return $provider;
 }
 
+/**
+ * Runs the plugin's required multi-factor middleware of the app panel for the given user.
+ */
+function multiFactorMiddleware(User $user): Response
+{
+    actingAs($user, 'app');
+    Filament::setCurrentPanel('app');
+
+    $response = app(EnsureMultiFactorAuthenticationIsEnabled::class)->handle(Request::create('/app'), fn (): Response => new Response('passed'));
+
+    if (! $response instanceof Response) {
+        throw new RuntimeException('The middleware gave no response.');
+    }
+
+    return $response;
+}
+
+/**
+ * A plugin app authentication whose Filament actions come from the given closure.
+ *
+ * @param  Closure(): array<Action>  $actions
+ */
+function multiFactorProviderWithActions(Closure $actions): AppAuthentication
+{
+    return new class(app(Google2FA::class), $actions) extends AppAuthentication
+    {
+        /**
+         * @param  Closure(): array<Action>  $actions
+         */
+        public function __construct(Google2FA $google2FA, protected Closure $actions)
+        {
+            parent::__construct($google2FA);
+        }
+
+        protected function getFilamentActions(): array
+        {
+            return ($this->actions)();
+        }
+    };
+}
+
 function multiFactorAction(string $name): TestAction
 {
     return TestAction::make($name)->schemaComponent('app', 'content');
@@ -246,6 +293,42 @@ it('regenerates recovery codes with the firebase password', function () {
     expect($user->refresh()->getAppAuthenticationRecoveryCodes())->not->toBe(['old-code']);
 });
 
+it('refuses recovery code regeneration with a wrong firebase password', function () {
+    multiFactorProvider()->recoverable();
+
+    $user = linkedUser();
+    multiFactorEnable($user);
+    $user->saveAppAuthenticationRecoveryCodes(['old-code']);
+    multiFactorFirebase();
+
+    multiFactorProfile($user)
+        ->callAction(multiFactorAction('regenerateAppAuthenticationRecoveryCodes'), ['password' => 'wrong'])
+        ->assertHasFormErrors(['password' => __('validation.current_password')]);
+
+    expect($user->refresh()->getAppAuthenticationRecoveryCodes())->toBe(['old-code']);
+});
+
+it('stops when filament creates no password field', function () {
+    multiFactorProviderWithActions(fn (): array => [Action::make('noPassword')])->getActions();
+})->throws(LogicException::class, 'have no password field');
+
+it('stops when a password field has no current_password rule', function () {
+    multiFactorProviderWithActions(fn (): array => [
+        Action::make('plainPassword')->schema([TextInput::make('password')->password()]),
+    ])->getActions();
+})->throws(LogicException::class, 'has no current_password rule');
+
+it('shows app authentication management when firebase is down', function () {
+    $user = linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUser')->andThrow(new ApiConnectionFailed('Firebase is down'));
+
+    actingAs($user, 'app')
+        ->get('/app/profile')
+        ->assertOk()
+        ->assertSee(__('filament-panels::auth/multi-factor/app/actions/set-up.label'));
+});
+
 it('hides app authentication management for users without a password', function () {
     $user = linkedUser();
     multiFactorFirebase(multiFactorGoogleRecord());
@@ -302,6 +385,27 @@ it('sends a user to the set-up page when firebase cannot tell the providers', fu
     $user = linkedUser();
     $firebase = mockFirebase();
     $firebase->shouldReceive('getUser')->andThrow(new ApiConnectionFailed('Firebase is down'));
+    config()->set('filament-firebase-auth.revalidate_every', 0);
+
+    actingAs($user, 'app')
+        ->get('/app')
+        ->assertRedirect(Filament::getPanel('app')->getSetUpRequiredMultiFactorAuthenticationUrl());
+});
+
+it('sends an unlinked user to the set-up page under required mfa', function () {
+    multiFactorRequire();
+    $user = User::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+    mockFirebase()->shouldNotReceive('getUser');
+
+    $response = multiFactorMiddleware($user);
+
+    expect($response->isRedirect(Filament::getPanel('app')->getSetUpRequiredMultiFactorAuthenticationUrl()))->toBeTrue();
+});
+
+it('sends a user that firebase does not know to the set-up page under required mfa', function () {
+    multiFactorRequire();
+    $user = linkedUser();
+    mockFirebase()->shouldReceive('getUser')->with('uid-1')->andThrow(new UserNotFound('No user'));
     config()->set('filament-firebase-auth.revalidate_every', 0);
 
     actingAs($user, 'app')

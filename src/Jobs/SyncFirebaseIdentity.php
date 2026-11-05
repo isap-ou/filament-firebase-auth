@@ -1,0 +1,71 @@
+<?php
+
+namespace Isapp\FilamentFirebaseAuth\Jobs;
+
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Database\Eloquent\Model;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
+use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
+use Kreait\Firebase\Auth\UserRecord;
+use Kreait\Firebase\Exception\FirebaseException;
+use Psr\Log\LoggerInterface;
+
+/**
+ * Checks the Firebase user of one link and copies its state to the link.
+ *
+ * The job runs outside a panel request. It finds the record through the link, not through a panel.
+ * A changed link changes the session fingerprint (`HasFirebaseIdentity::getAuthPassword()`).
+ * Laravel's `AuthenticateSession` then logs the session out on its next request.
+ */
+class SyncFirebaseIdentity implements ShouldQueue
+{
+    use Queueable;
+
+    public function __construct(public readonly int | string $identityId) {}
+
+    public function handle(FindFirebaseUser $find, SyncsLocalUsers $sync): void
+    {
+        $identity = FirebaseIdentity::query()->find($this->identityId);
+
+        if (! $identity instanceof FirebaseIdentity) {
+            return;
+        }
+
+        try {
+            $firebaseUser = $find->handle($identity->firebase_uid);
+        } catch (FirebaseException $exception) {
+            $this->logFirebaseFailure($identity, $exception);
+
+            return;
+        }
+
+        if (! $firebaseUser instanceof UserRecord || $firebaseUser->disabled) {
+            // An earlier mark stays, so the fingerprint does not change on each check.
+            $identity->forceFill(['invalidated_at' => $identity->invalidated_at ?? now()])->save();
+
+            return;
+        }
+
+        $record = $identity->getRelationValue('authenticatable');
+
+        if (! $record instanceof Model || ! $record instanceof Authenticatable) {
+            return;
+        }
+
+        $sync->handle($record, $firebaseUser);
+    }
+
+    /**
+     * Logs the UID and the exception class only. A transport message can contain the request URL with the API key.
+     */
+    protected function logFirebaseFailure(FirebaseIdentity $identity, FirebaseException $exception): void
+    {
+        app(LoggerInterface::class)->warning('The Firebase session check failed. The link did not change.', [
+            'uid' => $identity->firebase_uid,
+            'exception' => $exception::class,
+        ]);
+    }
+}

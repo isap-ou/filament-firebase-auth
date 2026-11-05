@@ -4,9 +4,13 @@ namespace Isapp\FilamentFirebaseAuth;
 
 use Closure;
 use Filament\Contracts\Plugin;
+use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Panel;
 use Filament\Support\Concerns\EvaluatesClosures;
+use Illuminate\Contracts\Session\Middleware\AuthenticatesSessions;
+use Illuminate\Support\Str;
 use Isapp\FilamentFirebaseAuth\Actions\Panels\EnsurePanelUsesFirebasePages;
+use Isapp\FilamentFirebaseAuth\Http\Middleware\ScheduleFirebaseSessionCheck;
 
 /**
  * The per-panel settings of the plugin.
@@ -35,7 +39,10 @@ class FilamentFirebaseAuthPlugin implements Plugin
         return 'filament-firebase-auth';
     }
 
-    public function register(Panel $panel): void {}
+    public function register(Panel $panel): void
+    {
+        $this->registerSessionCheck($panel);
+    }
 
     /**
      * Filament calls this method on the first request of the panel.
@@ -44,6 +51,26 @@ class FilamentFirebaseAuthPlugin implements Plugin
     public function boot(Panel $panel): void
     {
         app(EnsurePanelUsesFirebasePages::class)->handle($panel);
+    }
+
+    /**
+     * Adds the background session check. Laravel's `AuthenticateSession` does the logout,
+     * so the plugin adds Filament's subclass when the panel has no session authentication yet.
+     *
+     * Filament calls `register()` when the panel adds the plugin. Middleware that the panel adds
+     * later is not visible here. The router removes a second entry of the same class.
+     */
+    private function registerSessionCheck(Panel $panel): void
+    {
+        $panel->authMiddleware([ScheduleFirebaseSessionCheck::class]);
+
+        foreach ($panel->getMiddleware() as $middleware) {
+            if (is_a(Str::before($middleware, ':'), AuthenticatesSessions::class, true)) {
+                return;
+            }
+        }
+
+        $panel->middleware([AuthenticateSession::class]);
     }
 
     /**

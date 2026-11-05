@@ -291,6 +291,53 @@ it('signs in a linked user through a guard outside a panel request', function ()
         ->and(auth('app')->id())->toBe($user->getKey());
 });
 
+it('applies extra credential conditions to the local record', function (array $conditions, bool $signsIn) {
+    // A host adds conditions such as `'is_active' => true` to Filament's credentials, as with Laravel's eloquent driver.
+    $user = linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord());
+    $firebase->shouldReceive('signInWithEmailAndPassword')->once()->andReturn(signInResult('uid-1'));
+    $firebase->shouldReceive('getUser')->andReturn(userRecord());
+    Filament::setCurrentPanel('app');
+
+    expect(auth('app')->attempt(['email' => 'jane@example.com', 'password' => 'secret', ...$conditions]))->toBe($signsIn)
+        ->and(auth('app')->id())->toBe($signsIn ? $user->getKey() : null)
+        ->and(User::query()->count())->toBe(1);
+})->with([
+    'value that matches' => [['name' => 'Jane'], true],
+    'value that does not match' => [['name' => 'John'], false],
+    'list that does not match' => [['name' => ['John', 'Ada']], false],
+    'closure that does not match' => [[fn ($query) => $query->where('name', 'John')], false],
+]);
+
+it('applies extra credential conditions to a record found by email', function () {
+    // The record exists but fails the condition. The open panel must not create a second record.
+    User::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord());
+    $firebase->shouldReceive('signInWithEmailAndPassword')->once()->andReturn(signInResult('uid-1'));
+    $firebase->shouldReceive('getUser')->andReturn(userRecord());
+    $firebase->shouldNotReceive('deleteUser');
+    Filament::setCurrentPanel('app');
+
+    expect(auth('app')->attempt(['email' => 'jane@example.com', 'password' => 'secret', 'name' => 'John']))->toBeFalse()
+        ->and(User::query()->count())->toBe(1)
+        ->and(FirebaseIdentity::query()->count())->toBe(0);
+});
+
+it('applies the query callback of the provider', function () {
+    linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord());
+    $firebase->shouldReceive('signInWithEmailAndPassword')->once()->andReturn(signInResult('uid-1'));
+    $firebase->shouldReceive('getUser')->andReturn(userRecord());
+    firebaseProvider('app')->withQuery(fn ($query) => $query->where('name', 'John'));
+
+    signIn('app')->assertHasFormErrors(['email' => failedMessage()]);
+
+    expect(auth('app')->check())->toBeFalse();
+});
+
 it('gives the panel of the guard to the record creation', function () {
     $panels = new ArrayObject;
     app()->bind(CreatesLocalUsers::class, fn (): CreatesLocalUsers => new class($panels) implements CreatesLocalUsers

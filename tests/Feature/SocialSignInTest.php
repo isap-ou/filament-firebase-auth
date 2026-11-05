@@ -3,6 +3,8 @@
 use Filament\Facades\Filament;
 use Filament\FilamentServiceProvider;
 use Filament\Panel;
+use Illuminate\Auth\EloquentUserProvider;
+use Illuminate\Auth\SessionGuard;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Log;
@@ -188,6 +190,26 @@ it('ends older sessions when a social sign-in proves the email', function () {
     // The current sign-in stored the new fingerprint, so it stays on the next request.
     app('auth')->forgetGuards();
     get('/app')->assertOk();
+});
+
+it('applies the query callback of the user provider', function () {
+    linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->andReturn(socialSignInToken('uid-1'));
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord());
+    $guard = auth()->guard('app');
+    expect($guard)->toBeInstanceOf(SessionGuard::class);
+    /** @var SessionGuard $guard */
+    /** @var EloquentUserProvider $provider */
+    $provider = $guard->getProvider();
+    $provider->withQuery(fn ($query) => $query->where('name', 'John'));
+
+    postJson('/app/firebase/sign-in', ['credential' => 'token-1'])
+        ->assertStatus(422)
+        ->assertExactJson(['message' => __('filament-panels::auth/pages/login.messages.failed')]);
+
+    expect(auth('app')->check())->toBeFalse()
+        ->and(User::query()->count())->toBe(1);
 });
 
 it('redirects to the intended url', function () {

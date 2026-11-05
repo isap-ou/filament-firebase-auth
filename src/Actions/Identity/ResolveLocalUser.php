@@ -2,7 +2,9 @@
 
 namespace Isapp\FilamentFirebaseAuth\Actions\Identity;
 
+use Closure;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Isapp\FilamentFirebaseAuth\Data\ResolvedUser;
 use Isapp\FilamentFirebaseAuth\Enums\Resolution;
@@ -30,9 +32,14 @@ class ResolveLocalUser
      *
      * A disabled Firebase user is always blocked.
      *
+     * `$constraints` adds the host conditions of the user provider (extra credentials and `withQuery()`),
+     * as Laravel's eloquent driver does. A linked record or a record with the same email that fails them
+     * blocks the sign-in. They never apply to a new record.
+     *
      * @param  class-string<Model&Authenticatable>  $model
+     * @param  (Closure(Builder<Model>): mixed)|null  $constraints
      */
-    public function handle(UserRecord $firebaseUser, string $model, bool $createOnSignIn): ResolvedUser
+    public function handle(UserRecord $firebaseUser, string $model, bool $createOnSignIn, ?Closure $constraints = null): ResolvedUser
     {
         if ($firebaseUser->disabled) {
             return $this->blocked();
@@ -45,7 +52,7 @@ class ResolveLocalUser
             ->first();
 
         if ($identity !== null) {
-            return $this->linked($instance, $identity);
+            return $this->linked($instance, $identity, $constraints);
         }
 
         /** @var (Model&Authenticatable)|null $user */
@@ -54,7 +61,7 @@ class ResolveLocalUser
             : $instance->newQuery()->where('email', $firebaseUser->email)->first();
 
         if ($user !== null) {
-            return $this->linkedByEmail($user, $firebaseUser);
+            return $this->meetsConstraints($user, $constraints) ? $this->linkedByEmail($user, $firebaseUser) : $this->blocked();
         }
 
         if (! $createOnSignIn) {
@@ -71,10 +78,16 @@ class ResolveLocalUser
     /**
      * A link without a visible record (for example a soft deleted record) blocks the sign-in.
      */
-    protected function linked(Model & Authenticatable $instance, FirebaseIdentity $identity): ResolvedUser
+    protected function linked(Model & Authenticatable $instance, FirebaseIdentity $identity, ?Closure $constraints): ResolvedUser
     {
+        $query = $instance->newQuery()->whereKey($identity->authenticatable_id);
+
+        if ($constraints !== null) {
+            $constraints($query);
+        }
+
         /** @var (Model&Authenticatable)|null $user */
-        $user = $instance->newQuery()->whereKey($identity->authenticatable_id)->first();
+        $user = $query->first();
 
         if ($user === null) {
             return $this->blocked();
@@ -102,6 +115,18 @@ class ResolveLocalUser
         }
 
         return new ResolvedUser(Resolution::LinkedByEmail, $user);
+    }
+
+    protected function meetsConstraints(Model & Authenticatable $user, ?Closure $constraints): bool
+    {
+        if ($constraints === null) {
+            return true;
+        }
+
+        $query = $user->newQuery()->whereKey($user->getKey());
+        $constraints($query);
+
+        return $query->exists();
     }
 
     protected function blocked(): ResolvedUser

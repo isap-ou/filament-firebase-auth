@@ -61,7 +61,7 @@ Read the [architecture guide](https://github.com/isap-ou/filament-firebase-auth/
 
 - PHP 8.3 or later
 - Laravel 12.69.3 or later, or Laravel 13.33 or later
-- Filament 5
+- Filament 5.8.3 or later (Composer blocks older Filament 5 releases because of security advisories)
 - A Firebase project with a service account
 - [`kreait/laravel-firebase`](https://github.com/kreait/laravel-firebase) 7.2 or later (Composer installs it with the plugin)
 
@@ -261,6 +261,10 @@ The emulator keeps its accounts in memory. They are gone after a restart.
 After `php artisan config:cache`, Laravel no longer loads `.env`, so the value in `.env` has no effect.
 Then set the variable in the real environment of the process (shell, Docker, process manager), or do not cache the config in local development.
 
+> [!CAUTION]
+> **Never set `FIREBASE_AUTH_EMULATOR_HOST` in production.**
+> With this variable, `kreait/firebase-php` does not check the signature of ID tokens. Anyone could then post a forged token to the social sign-in route and sign in as any user.
+
 ### 8. Firebase troubleshooting
 
 | Symptom | Cause and fix |
@@ -351,9 +355,17 @@ public function panel(Panel $panel): Panel
 
 Call `->id()` before `->plugin()`. The plugin reads the panel middleware when you add it.
 
-On the first request of the panel, the plugin checks this setup.
-If the guard uses the `firebase` driver and the panel uses Filament's own registration page, profile page, app authentication or required-MFA middleware, the plugin throws a `LogicException`.
+On each panel request, the plugin checks this setup. It checks every panel whose guard uses the `firebase` driver, also a panel without the plugin.
+The plugin throws a `LogicException` when such a panel:
+
+- uses Filament's own registration page, profile page, app authentication or required-MFA middleware,
+- has `->passwordReset()`, but its password broker does not use the `firebase` driver (without `->authPasswordBroker()`, Filament uses the default broker of `config/auth.php`),
+- has a model without the `HasFirebaseIdentity` trait.
+
 The message names the fix. The plugin never stores a local password silently.
+
+Keep `->emailChangeVerification()` on a panel with the profile page. Without it, a profile email change moves the shared Firebase email at once, with no proof that the person owns the new address.
+Password resets in all apps on the project then go to the new address.
 
 ### Plugin options
 
@@ -435,6 +447,7 @@ class Admin extends Authenticatable implements CanResetPassword, FilamentUser, M
 
 The trait reads the verified flag from the link table and returns a session fingerprint from `getAuthPassword()`.
 `markEmailAsVerified()` and `markEmailAsUnverified()` write the flag to Firebase, so the change shows in all apps on the Firebase project.
+`markEmailAsVerified()` first reads the Firebase user. When the Firebase email is not the local email that the verification link proved, it changes nothing and returns `false`.
 It also deletes the link when the record is deleted.
 
 If your model uses Laravel's `Authenticatable` or `MustVerifyEmail` traits directly (not through `Illuminate\Foundation\Auth\User`), PHP reports a method collision.
@@ -479,7 +492,14 @@ For each sign-in (password or social), the plugin applies these rules in order:
 4. Otherwise, the sign-in fails.
 
 A disabled Firebase account, a record linked to another Firebase UID, and a user without panel access also fail.
+A Firebase user without an email (for example a Twitter account without the email permission) fails too, unless a link already exists.
 Every failure shows Filament's own "These credentials do not match our records" message, so nobody can find out which emails exist.
+
+Rule 2 trusts the `emailVerified` flag of Firebase, whichever provider set it. Allow only providers whose email you trust to link existing records by email.
+
+The `firebase` driver applies extra credentials and `withQuery()` the way Laravel's `eloquent` driver does.
+For example, when you add `'is_active' => true` to the credentials of the login page, a record with `is_active = false` cannot sign in.
+These conditions limit an existing record. A new record on an open panel does not have to match them.
 
 ## Social sign-in
 
@@ -498,6 +518,7 @@ The route has the panel middleware, the CSRF check and a rate limit of 5 attempt
 Social sign-in trusts the provider and its own second factor. It does not show Filament's multi-factor challenge.
 If you need a second factor for these users, turn it on at the provider (for example in Google Workspace or Microsoft Entra).
 [`dutchcodingcompany/filament-socialite`](https://github.com/DutchCodingCompany/filament-socialite) takes the same approach.
+Read the warning in [Two-factor authentication](#two-factor-authentication): this rule applies to users with a password too.
 
 ## Two-factor authentication
 
@@ -510,6 +531,17 @@ Filament's multi-factor authentication protects email-and-password sign-in. Fila
 - Filament's email code authentication has no password step. It works without a plugin class.
 - When multi-factor authentication is required, set the plugin middleware with `->multiFactorAuthenticationRequiredMiddlewareName(EnsureMultiFactorAuthenticationIsEnabled::class)`.
   A user who signs in only with a social provider then passes. All other users get Filament's behaviour.
+
+> [!WARNING]
+> **Social sign-in skips Filament's multi-factor challenge for every user, also for a user with a Firebase password.**
+> A person who knows the Firebase password of an account can sign in to Firebase directly (for example through the Firebase REST API), link their own Google or GitHub account to that Firebase user, and then use the social button.
+> The plugin then signs them in with no Filament multi-factor challenge. Filament's multi-factor authentication protects only the email-and-password form.
+> To reduce this risk:
+>
+> - Do not add social providers (`->providers([...])`) to a panel that requires multi-factor authentication. This is the only full fix.
+> - Keep the Firebase default of one account per email address (Authentication → Settings → User account linking). It stops a second Firebase account with the same email. It does not stop the link step above.
+> - Keep **email enumeration protection** on, so that an attacker cannot easily find the emails of your accounts.
+> - Require a second factor at the provider for the accounts that matter (for example in Google Workspace or Microsoft Entra).
 
 Users without a Firebase password see no app authentication actions on the profile page.
 The section heading can still show, with no content.
@@ -526,9 +558,11 @@ For a social-only user on a panel that requires multi-factor authentication, the
 Another app or the Firebase console can delete or disable an account, or revoke its tokens (Firebase does this on a password change).
 Firebase does not notify your app. So the plugin checks the Firebase user of each session in the background:
 
-- After `revalidate_every` minutes (default `15`), the next panel request starts a check. The request never waits for Firebase.
-- With `revalidate_queue` set to `null`, the check runs after the response in the same process. Set a queue name to run it on a queue worker.
+- After `revalidate_every` minutes (default `15`), the next panel request starts a check.
+- With `revalidate_queue` set to `null`, the check runs after the response in the same process. The request does not wait for Firebase.
+- Set a queue name to run the check on a queue worker. The job uses the default queue connection (`QUEUE_CONNECTION`). On the `sync` connection, the job runs at once, and that request waits for Firebase.
 - When the account is missing or disabled, or its tokens were revoked, the session fingerprint changes.
+- The fingerprint also changes when the email becomes verified, or when the Firebase user loses the `password` provider (for example after the owner of the email signs in with Google, and Firebase drops an unproven password). Then a person who created the account with somebody else's email loses the session.
 - Laravel's `AuthenticateSession` middleware then logs the session out on its next request, also a "remember me" session.
 - When Firebase cannot be reached, nothing changes. The next interval tries again.
 
@@ -543,6 +577,9 @@ The profile page has a "Log out other sessions" action. It logs out all other se
 Set `global_logout` to `true` to show a "Log out everywhere" action on the profile page.
 It revokes the Firebase refresh tokens of the user. This also signs the person out of your other apps on the same Firebase project.
 For this reason, it is off by default.
+
+A user who signs in only with a social provider has no Firebase password. For this user, "Delete account", "Log out other sessions" and "Log out everywhere" ask for no password, only for a confirmation.
+So anyone with a stolen session of such a user can use them. With `delete_accounts = orphaned`, one click then deletes the shared Firebase account.
 
 After a password change, an email change, "log out other sessions" and "log out everywhere", the plugin signs the current session in again with the new fingerprint.
 Laravel fires its `Login` event for this.
@@ -570,7 +607,7 @@ More facts:
 - `new_only` compares the creation time and the last sign-in time of the Firebase account. Both must be within `new_account_window` seconds (default `60`) of each other and of now.
 - The Firebase part runs after the database transaction commits. A Firebase failure never stops the local deletion. The plugin logs the UID and the exception class.
 - A soft delete keeps the link. A force delete removes it.
-- Bulk deletes through the query builder (`Admin::query()->where(...)->delete()`) skip model events. They remove neither the link nor the Firebase account. Delete records one by one, or clean up yourself.
+- Bulk deletes through the query builder (`Admin::query()->where(...)->delete()`) skip model events. They remove neither the link nor the Firebase account. The link that stays blocks that Firebase UID in this model. Delete records one by one, or delete the link rows yourself.
 - When registration fails after the plugin created a Firebase account, the plugin deletes that account in every mode, because it created it in the same request.
 
 ## Create users with `make:filament-user`
@@ -578,8 +615,10 @@ More facts:
 The plugin replaces Filament's `make:filament-user` command (and its aliases). The options stay the same:
 
 ```bash
-php artisan make:filament-user --panel=admin --name="Jane Doe" --email=jane@example.com --password=secret
+php artisan make:filament-user --panel=admin --name="Jane Doe" --email=jane@example.com
 ```
+
+The command asks for the password. Do not pass `--password` on the command line: the shell history keeps it.
 
 On a panel whose guard uses the `firebase` driver:
 
@@ -638,7 +677,8 @@ public function register(): void
 ```
 
 The class gets the Firebase user only. Extra fields of the registration form do not reach it.
-To save extra form fields, subclass the plugin's `Pages\Register` page and use Filament's `afterRegister()` hook.
+The output of `mutateFormDataBeforeRegister()` does not reach the record either: the plugin page builds the record from the Firebase user.
+To save extra form fields or mutated data, subclass the plugin's `Pages\Register` page and use Filament's `afterRegister()` hook.
 
 A custom `SyncsLocalUsers` must also update the link columns, or the session check breaks.
 The simplest way is to extend the default class:
@@ -679,7 +719,7 @@ You can inject them in your own code, for example `Actions\Firebase\FindOrCreate
 | `delete_accounts` | `never` | `never`, `new_only` or `orphaned`. Read [Account deletion](#account-deletion). |
 | `new_account_window` | `60` | Seconds. For `new_only`, an account younger than this counts as new. |
 | `revalidate_every` | `15` | Minutes between session checks. `0` turns the check off. |
-| `revalidate_queue` | `null` | Queue of the session check job. `null` runs it after the response. |
+| `revalidate_queue` | `null` | Queue of the session check job, on the default queue connection. `null` runs it after the response. |
 | `global_logout` | `false` | Shows "Log out everywhere" on the profile page. |
 | `social_sign_in` | `js_sdk` | How social sign-in works. `js_sdk` is the only value. |
 | `web.api_key`, `web.auth_domain`, `web.project_id`, `web.app_id` | env | The Firebase web config for the social buttons. |
@@ -753,7 +793,7 @@ Read [CONTRIBUTING.md](https://github.com/isap-ou/filament-firebase-auth/blob/ma
 ## Limitations
 
 - **No passkeys.** Firebase Authentication has no passkey sign-in yet.
-- **No Firebase multi-factor authentication.** Filament's own multi-factor authentication works. Password sign-in for an account with a Firebase second factor (SMS or TOTP) enrolled is not supported in v1.
+- **No Firebase multi-factor authentication.** Filament's own multi-factor authentication works. An account with a Firebase second factor (SMS or TOTP, enrolled in another app) cannot sign in with a password: the plugin refuses the password check and logs the code `MFA_REQUIRED`.
 - **No custom `oidc.*` or `saml.*` providers.** Only the providers in the `SocialProvider` enum.
 - **No API or token auth.** The plugin is for panel sessions only.
 - **No Firebase multi-tenancy, phone sign-in or anonymous sign-in.**
@@ -764,7 +804,7 @@ Read [CONTRIBUTING.md](https://github.com/isap-ou/filament-firebase-auth/blob/ma
 
 ## Security
 
-If you find a security issue, send an email to [contact@isapp.be](mailto:contact@isapp.be). Do not open a public issue.
+If you find a security issue, use **Report a vulnerability** on the [Security tab](https://github.com/isap-ou/filament-firebase-auth/security/advisories/new), or send an email to [contact@isapp.be](mailto:contact@isapp.be). Do not open a public issue.
 Read the [security policy](https://github.com/isap-ou/filament-firebase-auth/blob/main/.github/SECURITY.md).
 
 ## Contributing

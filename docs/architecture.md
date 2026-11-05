@@ -18,7 +18,7 @@ Firebase is the source of truth for credentials. The local database keeps the re
 | `Illuminate\Contracts\Auth\UserProvider` | `Auth\FirebaseUserProvider` (driver `firebase`) | `retrieveByCredentials()` finds the Firebase user by email and resolves the local record without saving it. `validateCredentials()` checks the password with Firebase, then saves the record and its link. `rehashPasswordIfRequired()` does nothing. |
 | `Illuminate\Contracts\Auth\PasswordBroker` | `Passwords\FirebasePasswordBroker` (driver `firebase`) | Laravel creates and checks the reset tokens, and Filament sends the email. On `reset()`, the broker sets the new password in Firebase and marks the email as verified. |
 | `Illuminate\Contracts\Auth\PasswordBrokerFactory` | `Passwords\FirebasePasswordBrokerManager` | Laravel's broker manager has no `extend()` hook. The plugin replaces the `auth.password` binding with a subclass that builds the `firebase` broker. Every other broker comes from Laravel's code. |
-| `Illuminate\Contracts\Auth\MustVerifyEmail` | trait `Concerns\HasFirebaseIdentity` | `hasVerifiedEmail()` reads the local copy of the Firebase flag. `markEmailAsVerified()` writes the flag to Firebase and to the local copy. |
+| `Illuminate\Contracts\Auth\MustVerifyEmail` | trait `Concerns\HasFirebaseIdentity` | `hasVerifiedEmail()` reads the local copy of the Firebase flag. `markEmailAsVerified()` writes the flag to Firebase and to the local copy, but only when the Firebase email equals the local email that the link proved. |
 | `Illuminate\Contracts\Auth\CanResetPassword` | trait `Concerns\HasFirebaseIdentity` | Gives the email to the broker. |
 | `Authenticatable::getAuthPassword()` | trait `Concerns\HasFirebaseIdentity` | Returns a session fingerprint, not a password. See [Session check](#session-check). |
 
@@ -33,8 +33,8 @@ So the plugin ships thin subclasses, `Pages\Register` and `Pages\EditProfile`. O
 For the same reason, the plugin ships `MultiFactor\AppAuthentication` and `Http\Middleware\EnsureMultiFactorAuthenticationIsEnabled`.
 The host selects all of them in the panel configuration.
 
-On the first request of a panel, `Actions\Panels\EnsurePanelUsesFirebasePages` checks the panel.
-When the panel guard uses the `firebase` driver and the panel uses one of Filament's own classes above, it throws a `LogicException` that names the fix.
+On each panel request, `Actions\Panels\EnsurePanelUsesFirebasePages` checks the panel. The plugin runs it when the panel boots, and the service provider runs it on Filament's `ServingFilament` event, so a panel without the plugin is checked too.
+When the panel guard uses the `firebase` driver and the panel uses one of Filament's own classes above, a password broker without the `firebase` driver, or a model without the `HasFirebaseIdentity` trait, it throws a `LogicException` that names the fix.
 The plugin never swaps pages behind your back. Filament registers the Livewire components of the pages when it builds the panel, and `filament:cache-components` caches them, so a later swap would be fragile.
 
 Social sign-in has no Laravel contract either. The plugin adds the buttons with panel render hooks and posts the ID token to a route of the panel.

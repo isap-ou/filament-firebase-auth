@@ -525,7 +525,9 @@ it('uses filament for a record without a link', function () {
     Filament::setCurrentPanel('app');
     $url = Filament::getVerifyEmailChangeUrl($user, 'new@example.com');
     $signature = Query::new($url)->get('signature');
+    // Filament 5.10.2 and later read the prefixed key. Earlier 5.x versions read the plain signature.
     cache()->put("filament:auth:email_change:verification:{$signature}", true, ttl: now()->addHour());
+    cache()->put($signature, true, ttl: now()->addHour());
 
     actingAs($user, 'app')->get($url)->assertRedirect();
 

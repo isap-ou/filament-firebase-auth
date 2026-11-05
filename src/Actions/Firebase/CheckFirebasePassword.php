@@ -32,9 +32,10 @@ class CheckFirebasePassword
     /**
      * Returns the Firebase user, or null when Firebase rejects the credentials.
      *
-     * Firebase also rejects a disabled account. A failure without a Firebase answer
-     * (a timeout or a Firebase server error) goes to the caller, so that the caller can log it.
-     * Such a failure is not remembered.
+     * Firebase also rejects a disabled account. An answer without an ID token is a refusal too: the
+     * account has a second factor in Firebase, and the sign-in waits for it. The plugin cannot finish that
+     * step. A failure without a Firebase answer (a timeout or a Firebase server error) goes to the caller,
+     * so that the caller can log it. Such a failure is not remembered.
      */
     public function handle(string $email, #[SensitiveParameter] string $password): ?UserRecord
     {
@@ -45,7 +46,16 @@ class CheckFirebasePassword
         }
 
         try {
-            $uid = $this->auth->signInWithEmailAndPassword($email, $password)->firebaseUserId();
+            $result = $this->auth->signInWithEmailAndPassword($email, $password);
+
+            // kreait falls back to `localId` without an ID token, so the UID alone proves nothing.
+            if ($result->idToken() === null) {
+                $this->logger->warning('Firebase refused the password check.', ['code' => 'MFA_REQUIRED']);
+
+                $uid = null;
+            } else {
+                $uid = $result->firebaseUserId();
+            }
         } catch (FailedToSignIn $exception) {
             $status = $exception->response()?->getStatusCode();
 

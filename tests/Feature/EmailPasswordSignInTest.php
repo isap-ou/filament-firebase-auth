@@ -185,6 +185,19 @@ it('never deletes an account that a closed panel blocks for another reason', fun
     expect(FirebaseIdentity::query()->count())->toBe(0);
 });
 
+it('refuses a password sign-in that waits for a firebase second factor', function () {
+    $user = linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord());
+    $firebase->shouldReceive('signInWithEmailAndPassword')->once()->andReturn(mfaPendingSignInResult('uid-1'));
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord());
+
+    signIn('app')->assertHasFormErrors(['email' => failedMessage()]);
+
+    expect(auth('app')->check())->toBeFalse()
+        ->and(User::query()->whereKey($user->getKey())->exists())->toBeTrue();
+});
+
 it('rejects a disabled firebase account', function () {
     $user = linkedUser();
     $firebase = mockFirebase();

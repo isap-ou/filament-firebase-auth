@@ -33,11 +33,30 @@ function userRecord(array $overrides = []): UserRecord
 }
 
 /**
- * Build a Firebase sign-in result for the given UID.
+ * Build a Firebase sign-in result for the given UID. Firebase sends an ID token for a finished sign-in.
+ * The token is not signed: the plugin only checks that it is present.
  */
 function signInResult(string $uid): SignInResult
 {
-    return SignInResult::fromData(['localId' => $uid]);
+    $encode = fn (array $part): string => rtrim(strtr(base64_encode((string) json_encode($part)), '+/', '-_'), '=');
+
+    return SignInResult::fromData([
+        'localId' => $uid,
+        'idToken' => $encode(['alg' => 'RS256', 'typ' => 'JWT']) . '.' . $encode(['sub' => $uid]) . '.c2ln',
+    ]);
+}
+
+/**
+ * Build the sign-in result that Firebase gives for an account with a second factor in Firebase.
+ * It has no ID token, only a pending credential for the second step.
+ */
+function mfaPendingSignInResult(string $uid): SignInResult
+{
+    return SignInResult::fromData([
+        'localId' => $uid,
+        'mfaPendingCredential' => 'pending-credential',
+        'mfaInfo' => [['mfaEnrollmentId' => 'enrollment-1', 'phoneInfo' => '+*******1234']],
+    ]);
 }
 
 /**

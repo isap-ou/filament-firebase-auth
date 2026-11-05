@@ -6,6 +6,7 @@ use Closure;
 use Filament\Contracts\Plugin;
 use Filament\Panel;
 use Filament\Support\Concerns\EvaluatesClosures;
+use Isapp\FilamentFirebaseAuth\Actions\Panels\EnsurePanelUsesFirebasePages;
 
 /**
  * The per-panel settings of the plugin.
@@ -36,7 +37,14 @@ class FilamentFirebaseAuthPlugin implements Plugin
 
     public function register(Panel $panel): void {}
 
-    public function boot(Panel $panel): void {}
+    /**
+     * Filament calls this method on the first request of the panel.
+     * A Firebase panel with Filament's own registration or profile page then fails at once.
+     */
+    public function boot(Panel $panel): void
+    {
+        app(EnsurePanelUsesFirebasePages::class)->handle($panel);
+    }
 
     /**
      * When true, a sign-in with a Firebase account that has no local record creates one.

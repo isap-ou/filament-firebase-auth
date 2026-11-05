@@ -1,6 +1,7 @@
 <?php
 
 use Filament\Auth\Pages\Login;
+use Filament\Events\ServingFilament;
 use Filament\Facades\Filament;
 use Filament\Panel;
 use Isapp\FilamentFirebaseAuth\FilamentFirebaseAuthPlugin;
@@ -57,4 +58,24 @@ it('checks the pages when the panel boots', function () {
 
     expect(fn () => $panel->boot())
         ->toThrow(LogicException::class, '->registration(\Isapp\FilamentFirebaseAuth\Pages\Register::class)');
+});
+
+it('checks a firebase panel without the plugin when filament serves it', function () {
+    config()->set('auth.providers.firebase_guarded', ['driver' => 'firebase', 'model' => Admin::class]);
+    config()->set('auth.guards.firebase_guarded', ['driver' => 'session', 'provider' => 'firebase_guarded']);
+
+    // The host forgot the plugin. Filament's own registration page would store records without Firebase.
+    Filament::setCurrentPanel(Panel::make()->id('guarded')->authGuard('firebase_guarded')->registration());
+
+    expect(fn () => ServingFilament::dispatch())
+        ->toThrow(LogicException::class, '->registration(\Isapp\FilamentFirebaseAuth\Pages\Register::class)');
+});
+
+it('serves the fixture panels without an error', function () {
+    Filament::setCurrentPanel('app');
+    ServingFilament::dispatch();
+    Filament::setCurrentPanel('admin');
+    ServingFilament::dispatch();
+
+    expect(true)->toBeTrue();
 });

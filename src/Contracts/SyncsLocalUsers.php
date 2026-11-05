@@ -14,7 +14,8 @@ use Kreait\Firebase\Auth\UserRecord;
  * `email_verified_at`, `synced_at`, `tokens_valid_after` and `invalidated_at`.
  * Without these updates, session invalidation breaks. To write the four columns, inject
  * `Isapp\FilamentFirebaseAuth\Actions\Identity\RefreshFirebaseIdentity` and call its `handle()`
- * with the link of the record.
+ * with the link of the record, before you save the record. The session check job also refreshes the
+ * link itself before it calls this class, and it logs a database error of this class.
  */
 interface SyncsLocalUsers
 {

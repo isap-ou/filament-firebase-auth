@@ -60,7 +60,8 @@ One row links one local record to one Firebase user. Model: `Isapp\FilamentFireb
 | `synced_at` | The last copy from Firebase. |
 | `tokens_valid_after` | Firebase `tokensValidAfterTime`. Part of the session fingerprint. |
 | `invalidated_at` | Set when Firebase disables or deletes the user. Part of the session fingerprint. |
-| `session_salt` | Rotated by "Log out other sessions". Part of the session fingerprint. |
+| `session_salt` | Rotated by "Log out other sessions", and when the email becomes verified or the password provider disappears. Part of the session fingerprint. |
+| `has_password_provider` | The last known state of the Firebase `password` provider. Null until the first copy. |
 
 ```php
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
@@ -204,12 +205,14 @@ return $panel
     );
 ```
 
-On the first request of a panel whose guard uses the `firebase` driver, the plugin throws a `LogicException` when the panel uses:
+On each request of a panel whose guard uses the `firebase` driver (also a panel without the plugin), the plugin throws a `LogicException` when the panel uses:
 
 - Filament's own registration page (fix: `->registration(Register::class)`),
 - Filament's own profile page (fix: `->profile(EditProfile::class)`),
 - Filament's own `AppAuthentication` (fix: `AppAuthentication::make()` from `Isapp\FilamentFirebaseAuth\MultiFactor`),
-- Filament's own required multi-factor middleware (fix: `->multiFactorAuthenticationRequiredMiddlewareName(EnsureMultiFactorAuthenticationIsEnabled::class)`).
+- Filament's own required multi-factor middleware (fix: `->multiFactorAuthenticationRequiredMiddlewareName(EnsureMultiFactorAuthenticationIsEnabled::class)`),
+- `->passwordReset()` with a broker that does not use the `firebase` driver (fix: `'driver' => 'firebase'` on the broker and `->authPasswordBroker()`),
+- a model without the `HasFirebaseIdentity` trait.
 
 A host subclass of a plugin page passes the check.
 
@@ -377,7 +380,7 @@ Every action has one public `handle()` method. Inject the action in a constructo
 
 ### `Isapp\FilamentFirebaseAuth\Actions\Panels`
 
-`EnsurePanelUsesFirebasePages`: `(Panel $panel): void`. The first-request check of the panel pages and multi-factor classes.
+`EnsurePanelUsesFirebasePages`: `(Panel $panel): void`. The per-request check of the panel pages, multi-factor classes, password broker and model trait.
 
 ## Events
 
@@ -421,6 +424,13 @@ A disabled Firebase user is always blocked. Every failure (wrong password, unkno
 
 Social sign-in skips Filament's multi-factor challenge. The social provider owns the second factor.
 
+Warning: this applies to every user, also to a user with a Firebase password. A person who knows the Firebase password can sign in to Firebase directly, link their own provider account to that Firebase user, and then sign in with the social button, with no Filament multi-factor challenge. Mitigations for the host:
+
+- Do not add social providers to a panel that requires multi-factor authentication (the only full fix).
+- Keep the Firebase default of one account per email address. It does not stop the link step.
+- Keep email enumeration protection on.
+- Require a second factor at the provider for the accounts that matter.
+
 ### Registration
 
 `Isapp\FilamentFirebaseAuth\Pages\Register`. Only the save step changes:
@@ -433,7 +443,7 @@ The form, rate limits, `Registered` event, verification email and login stay Fil
 
 ### Email verification
 
-Filament's own page and Laravel's `VerifyEmail` notification. `markEmailAsVerified()` writes the flag to Firebase and to the link.
+Filament's own page and Laravel's `VerifyEmail` notification. `markEmailAsVerified()` reads the Firebase user fresh. It writes the flag to Firebase and to the link only when the Firebase email equals the local email (case-insensitive). Otherwise it returns false.
 
 ### Password reset
 
@@ -454,7 +464,7 @@ Filament's app authentication works on top of the plugin. Use `Isapp\FilamentFir
 
 ### Session check
 
-Every `revalidate_every` minutes, the middleware dispatches the job `Isapp\FilamentFirebaseAuth\Jobs\SyncFirebaseIdentity`. The job copies the Firebase state to the link. A disabled, deleted or revoked Firebase user changes the session fingerprint. Laravel's `AuthenticateSession` then logs the session out on the next request.
+Every `revalidate_every` minutes, the middleware dispatches the job `Isapp\FilamentFirebaseAuth\Jobs\SyncFirebaseIdentity`. The job copies the Firebase state to the link first, then syncs the record. A failed record save is logged and does not stop the link update. A disabled, deleted or revoked Firebase user changes the session fingerprint, and so does an email that becomes verified or a lost `password` provider. Laravel's `AuthenticateSession` then logs the session out on the next request.
 
 ### Account deletion
 
@@ -548,7 +558,7 @@ The command also logs a failed cleanup deletion and names the UID, so that an ad
 
 ## Limitations
 
-- No passkeys, no Firebase multi-factor auth (SMS, TOTP), no phone or anonymous auth, no Firebase multi-tenancy.
+- No passkeys, no Firebase multi-factor auth (SMS, TOTP), no phone or anonymous auth, no Firebase multi-tenancy. A password check for an account with a Firebase second factor fails (log code `MFA_REQUIRED`).
 - No custom `oidc.*` or `saml.*` providers. Only the `SocialProvider` cases.
 - No API token auth. The plugin is for panel sessions.
 - No import of local password hashes into Firebase.

@@ -2,6 +2,7 @@
 
 namespace Isapp\FilamentFirebaseAuth\Auth;
 
+use Closure;
 use Filament\FilamentManager;
 use Filament\Panel;
 use Illuminate\Auth\EloquentUserProvider;
@@ -9,6 +10,8 @@ use Illuminate\Auth\SessionGuard;
 use Illuminate\Config\Repository;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Auth\Factory as AuthFactory;
+use Illuminate\Contracts\Support\Arrayable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
 use Isapp\FilamentFirebaseAuth\Actions\Accounts\DeleteFirebaseUserIfAllowed;
@@ -45,9 +48,14 @@ class FirebaseUserProvider extends EloquentUserProvider
      *
      * A new record comes back unsaved. `validateCredentials()` saves it after the password check.
      * An unknown email or a blocked sign-in returns null. The password check still runs, so every
-     * attempt makes the same number of Firebase calls and takes about the same time.
+     * attempt with a wrong password makes the same Firebase calls (one lookup, one password check)
+     * and takes about the same time. A correct password reads the proven user once more. Only a
+     * caller who knows the password sees that difference.
      * On a closed panel, the deletion policy may then delete the Firebase account,
      * but only after Firebase proved the password.
+     *
+     * Credentials other than the email and the password, and the `withQuery()` callback, limit the
+     * local record, as in Laravel's eloquent driver.
      */
     public function retrieveByCredentials(#[SensitiveParameter] array $credentials): ?Authenticatable
     {
@@ -69,7 +77,7 @@ class FirebaseUserProvider extends EloquentUserProvider
 
             $panel = $this->panel();
             $createOnSignIn = $this->shouldCreateOnSignIn($panel);
-            $resolved = app(ResolveLocalUser::class)->handle($firebaseUser, $this->getModel(), $createOnSignIn);
+            $resolved = app(ResolveLocalUser::class)->handle($firebaseUser, $this->getModel(), $createOnSignIn, $this->constraints($credentials));
 
             if ($resolved->resolution === Resolution::Blocked) {
                 $proven = $this->checkPassword($email, $password);
@@ -113,7 +121,12 @@ class FirebaseUserProvider extends EloquentUserProvider
 
             // The provider keeps no state, so it resolves the record again. The given record must be that record.
             $panel = $this->panel();
-            $resolved = app(ResolveLocalUser::class)->handle($firebaseUser, $this->getModel(), $this->shouldCreateOnSignIn($panel));
+            $resolved = app(ResolveLocalUser::class)->handle(
+                $firebaseUser,
+                $this->getModel(),
+                $this->shouldCreateOnSignIn($panel),
+                $this->constraints($credentials),
+            );
 
             if (! $this->isResolvedRecord($user, $resolved)) {
                 return false;
@@ -148,6 +161,44 @@ class FirebaseUserProvider extends EloquentUserProvider
     }
 
     /**
+     * Builds the conditions of `EloquentUserProvider::retrieveByCredentials()` for the local record:
+     * the `withQuery()` callback, and each credential except the email and the password keys.
+     * A list becomes `whereIn()`, and a closure gets the query.
+     *
+     * @param  array<array-key, mixed>  $credentials
+     * @return (Closure(Builder<Model>): void)|null
+     */
+    protected function constraints(#[SensitiveParameter] array $credentials): ?Closure
+    {
+        $conditions = array_filter(
+            $credentials,
+            fn ($key): bool => $key !== 'email' && ! str_contains((string) $key, 'password'),
+            ARRAY_FILTER_USE_KEY,
+        );
+        $callback = $this->getQueryCallback();
+
+        if ($conditions === [] && $callback === null) {
+            return null;
+        }
+
+        return function (Builder $query) use ($conditions, $callback): void {
+            if ($callback !== null) {
+                $callback($query);
+            }
+
+            foreach ($conditions as $key => $value) {
+                if (is_array($value) || $value instanceof Arrayable) {
+                    $query->whereIn((string) $key, $value);
+                } elseif ($value instanceof Closure) {
+                    $value($query);
+                } else {
+                    $query->where((string) $key, $value);
+                }
+            }
+        };
+    }
+
+    /**
      * The plugin never stores a password, so there is nothing to rehash.
      */
     public function rehashPasswordIfRequired(Authenticatable $user, #[SensitiveParameter] array $credentials, bool $force = false): void {}
@@ -165,7 +216,7 @@ class FirebaseUserProvider extends EloquentUserProvider
 
     /**
      * Runs the deletion policy only when a closed panel blocked a Firebase user without a record.
-     * The caller gives the Firebase user only after Firebase proved the password (Review Focus 1).
+     * The caller gives the Firebase user only after Firebase proved the password.
      */
     protected function deleteIfBlockedOnClosedPanel(UserRecord $firebaseUser, UserRecord $proven): void
     {

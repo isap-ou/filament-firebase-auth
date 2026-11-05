@@ -6,6 +6,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FetchFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\RefreshFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
@@ -21,7 +22,7 @@ use Psr\Log\LoggerInterface;
  * A changed link changes the session fingerprint (`HasFirebaseIdentity::getAuthPassword()`).
  * Laravel's `AuthenticateSession` then logs the session out on its next request.
  *
- * Without a queue, the job runs in the request process after the response. The scoped
+ * Without a queue (or on a `sync` queue connection), the job runs in the request process. The scoped
  * `FindFirebaseUser` can then hold the record from before a change in that request.
  * The job therefore reads Firebase with `FetchFirebaseUser`, which never remembers a record.
  */
@@ -55,20 +56,27 @@ class SyncFirebaseIdentity implements ShouldQueue
             return;
         }
 
-        if ($firebaseUser->disabled) {
-            // The record is not synced. RefreshFirebaseIdentity sets the mark of a disabled user.
-            $refresh->handle($identity, $firebaseUser);
-
-            return;
-        }
-
         $record = $identity->getRelationValue('authenticatable');
+        $isRecord = $record instanceof Model && $record instanceof Authenticatable;
 
-        if (! $record instanceof Model || ! $record instanceof Authenticatable) {
+        // The link state goes first. A host sync class or a failed record save can then never keep a revoked
+        // session alive. The verified flag rises only for the email that the record holds now.
+        $refresh->handle($identity, $firebaseUser, $isRecord ? (string) $record->getAttribute('email') : '');
+
+        // The record of a disabled user is not synced. RefreshFirebaseIdentity sets the mark.
+        if ($firebaseUser->disabled || ! $isRecord) {
             return;
         }
 
-        $sync->handle($record, $firebaseUser);
+        try {
+            $sync->handle($record, $firebaseUser);
+        } catch (QueryException $exception) {
+            // For example, another app gave the Firebase account an email that another local record holds.
+            app(LoggerInterface::class)->warning('The session check could not save the local record. The link is up to date.', [
+                'uid' => $identity->firebase_uid,
+                'exception' => $exception::class,
+            ]);
+        }
     }
 
     /**

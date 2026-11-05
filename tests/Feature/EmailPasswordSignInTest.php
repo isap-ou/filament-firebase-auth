@@ -185,6 +185,19 @@ it('never deletes an account that a closed panel blocks for another reason', fun
     expect(FirebaseIdentity::query()->count())->toBe(0);
 });
 
+it('refuses a password sign-in that waits for a firebase second factor', function () {
+    $user = linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord());
+    $firebase->shouldReceive('signInWithEmailAndPassword')->once()->andReturn(mfaPendingSignInResult('uid-1'));
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord());
+
+    signIn('app')->assertHasFormErrors(['email' => failedMessage()]);
+
+    expect(auth('app')->check())->toBeFalse()
+        ->and(User::query()->whereKey($user->getKey())->exists())->toBeTrue();
+});
+
 it('rejects a disabled firebase account', function () {
     $user = linkedUser();
     $firebase = mockFirebase();
@@ -220,25 +233,50 @@ it('calls firebase once per request', function () {
         ->and(FirebaseIdentity::query()->count())->toBe(1);
 });
 
-it('makes one password call for every failed attempt', function (string $panel, Closure $arrange) {
+it('makes one lookup and one password call for every failed attempt', function (string $panel, Closure $arrange) {
+    // Equal call counts keep the timing equal, so the timing does not show which emails exist.
     $firebase = mockFirebase();
     $arrange($firebase);
     $firebase->shouldReceive('signInWithEmailAndPassword')->once()->andThrow(failedSignIn(400, 'INVALID_LOGIN_CREDENTIALS'));
+    $firebase->shouldNotReceive('getUser');
     $firebase->shouldNotReceive('deleteUser');
 
     signIn($panel, 'wrong')->assertHasFormErrors(['email' => failedMessage()]);
 })->with([
     'unknown email' => ['app', function (MockInterface $firebase) {
-        $firebase->shouldReceive('getUserByEmail')->andThrow(new UserNotFound('No user'));
+        $firebase->shouldReceive('getUserByEmail')->once()->andThrow(new UserNotFound('No user'));
     }],
     'blocked on a closed panel' => ['admin', function (MockInterface $firebase) {
-        $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord());
+        $firebase->shouldReceive('getUserByEmail')->once()->andReturn(userRecord());
     }],
     'wrong password' => ['app', function (MockInterface $firebase) {
         linkedUser();
-        $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord());
+        $firebase->shouldReceive('getUserByEmail')->once()->andReturn(userRecord());
+    }],
+    'disabled account' => ['app', function (MockInterface $firebase) {
+        linkedUser();
+        $firebase->shouldReceive('getUserByEmail')->once()->andReturn(userRecord(['disabled' => true]));
+    }],
+    'unverified email with a record' => ['app', function (MockInterface $firebase) {
+        User::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+        $firebase->shouldReceive('getUserByEmail')->once()->andReturn(userRecord(['emailVerified' => false]));
+    }],
+    'record linked to another uid' => ['app', function (MockInterface $firebase) {
+        linkedUser(uid: 'uid-2');
+        $firebase->shouldReceive('getUserByEmail')->once()->andReturn(userRecord());
     }],
 ]);
+
+it('makes one more call for a correct password on a closed panel', function () {
+    // Only a caller who knows the password sees the extra read of the proven user.
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->once()->andReturn(userRecord());
+    $firebase->shouldReceive('signInWithEmailAndPassword')->once()->andReturn(signInResult('uid-1'));
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord());
+    $firebase->shouldNotReceive('deleteUser');
+
+    signIn('admin')->assertHasFormErrors(['email' => failedMessage()]);
+});
 
 it('never creates a record through a guard of another panel', function () {
     config()->set('filament-firebase-auth.delete_accounts', 'orphaned');
@@ -276,6 +314,53 @@ it('signs in a linked user through a guard outside a panel request', function ()
 
     expect(auth('app')->attempt(['email' => 'jane@example.com', 'password' => 'secret']))->toBeTrue()
         ->and(auth('app')->id())->toBe($user->getKey());
+});
+
+it('applies extra credential conditions to the local record', function (array $conditions, bool $signsIn) {
+    // A host adds conditions such as `'is_active' => true` to Filament's credentials, as with Laravel's eloquent driver.
+    $user = linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord());
+    $firebase->shouldReceive('signInWithEmailAndPassword')->once()->andReturn(signInResult('uid-1'));
+    $firebase->shouldReceive('getUser')->andReturn(userRecord());
+    Filament::setCurrentPanel('app');
+
+    expect(auth('app')->attempt(['email' => 'jane@example.com', 'password' => 'secret', ...$conditions]))->toBe($signsIn)
+        ->and(auth('app')->id())->toBe($signsIn ? $user->getKey() : null)
+        ->and(User::query()->count())->toBe(1);
+})->with([
+    'value that matches' => [['name' => 'Jane'], true],
+    'value that does not match' => [['name' => 'John'], false],
+    'list that does not match' => [['name' => ['John', 'Ada']], false],
+    'closure that does not match' => [[fn ($query) => $query->where('name', 'John')], false],
+]);
+
+it('applies extra credential conditions to a record found by email', function () {
+    // The record exists but fails the condition. The open panel must not create a second record.
+    User::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord());
+    $firebase->shouldReceive('signInWithEmailAndPassword')->once()->andReturn(signInResult('uid-1'));
+    $firebase->shouldReceive('getUser')->andReturn(userRecord());
+    $firebase->shouldNotReceive('deleteUser');
+    Filament::setCurrentPanel('app');
+
+    expect(auth('app')->attempt(['email' => 'jane@example.com', 'password' => 'secret', 'name' => 'John']))->toBeFalse()
+        ->and(User::query()->count())->toBe(1)
+        ->and(FirebaseIdentity::query()->count())->toBe(0);
+});
+
+it('applies the query callback of the provider', function () {
+    linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord());
+    $firebase->shouldReceive('signInWithEmailAndPassword')->once()->andReturn(signInResult('uid-1'));
+    $firebase->shouldReceive('getUser')->andReturn(userRecord());
+    firebaseProvider('app')->withQuery(fn ($query) => $query->where('name', 'John'));
+
+    signIn('app')->assertHasFormErrors(['email' => failedMessage()]);
+
+    expect(auth('app')->check())->toBeFalse();
 });
 
 it('gives the panel of the guard to the record creation', function () {

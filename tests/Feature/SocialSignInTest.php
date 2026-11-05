@@ -3,10 +3,13 @@
 use Filament\Facades\Filament;
 use Filament\FilamentServiceProvider;
 use Filament\Panel;
+use Illuminate\Auth\EloquentUserProvider;
+use Illuminate\Auth\SessionGuard;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Str;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\EnsureFirebaseIdentityLinkable;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\ResolveLocalUser;
 use Isapp\FilamentFirebaseAuth\Contracts\SocialSignInMethod;
@@ -25,6 +28,7 @@ use Lcobucci\JWT\UnencryptedToken;
 
 use function Pest\Laravel\get;
 use function Pest\Laravel\postJson;
+use function Pest\Laravel\withCookie;
 use function Pest\Laravel\withSession;
 
 /**
@@ -164,6 +168,124 @@ it('signs in with a verified id token', function () {
         ->and(auth('app')->id())->toBe($user->getKey())
         ->and(FirebaseIdentity::query()->where('firebase_uid', 'uid-1')->count())->toBe(1);
 });
+
+it('ends older sessions when a social sign-in proves the email', function () {
+    // Someone created the account with this email and a password, then the owner signs in with Google.
+    // Firebase drops the unproven password provider and marks the email verified. The UID stays.
+    // Firebase keeps `validSince`, so only the plugin can end the older sessions.
+    $validSince = now()->subDay()->startOfSecond();
+    $user = linkedUser(verified: false);
+    $user->firebaseIdentity?->update(['tokens_valid_after' => $validSince]);
+    $olderFingerprint = $user->refresh()->getAuthPassword();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->with('token-1', true)->andReturn(socialSignInToken('uid-1'));
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord([
+        'validSince' => (string) $validSince->getTimestamp(),
+        'providerUserInfo' => [['providerId' => 'google.com', 'rawId' => 'g-1', 'email' => 'jane@example.com']],
+    ]));
+
+    postJson('/app/firebase/sign-in', ['credential' => 'token-1'])->assertOk();
+
+    expect($user->refresh()->getAuthPassword())->not->toBe($olderFingerprint)
+        ->and(auth('app')->id())->toBe($user->getKey());
+
+    // The current sign-in stored the new fingerprint, so it stays on the next request.
+    app('auth')->forgetGuards();
+    get('/app')->assertOk();
+});
+
+it('applies the query callback of the user provider', function () {
+    linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->andReturn(socialSignInToken('uid-1'));
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord());
+    $guard = auth()->guard('app');
+    expect($guard)->toBeInstanceOf(SessionGuard::class);
+    /** @var SessionGuard $guard */
+    /** @var EloquentUserProvider $provider */
+    $provider = $guard->getProvider();
+    $provider->withQuery(fn ($query) => $query->where('name', 'John'));
+
+    postJson('/app/firebase/sign-in', ['credential' => 'token-1'])
+        ->assertStatus(422)
+        ->assertExactJson(['message' => __('filament-panels::auth/pages/login.messages.failed')]);
+
+    expect(auth('app')->check())->toBeFalse()
+        ->and(User::query()->count())->toBe(1);
+});
+
+it('gives the session a new id and a new csrf token after a social sign-in', function () {
+    // A planted session must not survive the sign-in (session fixation). Laravel's `SessionGuard::login()`
+    // calls `regenerate(true)`, which gives a new ID and a new CSRF token. The controller's `regenerate()`
+    // does the same again, so this test pins the result, not the controller line.
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->andReturn(socialSignInToken('uid-1'));
+    $firebase->shouldReceive('getUser')->andReturn(userRecord());
+    linkedUser();
+    $plantedId = Str::random(40);
+    $plantedToken = Str::random(40);
+    app('session')->driver()->getHandler()->write($plantedId, serialize(['_token' => $plantedToken]));
+
+    // A JSON test request sends cookies only with credentials.
+    withCookie(session()->getName(), $plantedId)
+        ->withCredentials()
+        ->postJson('/app/firebase/sign-in', ['credential' => 'token-1'])
+        ->assertOk();
+
+    expect(session()->getId())->not->toBe($plantedId)
+        ->and(session()->token())->not->toBe($plantedToken)
+        ->and(auth('app')->check())->toBeTrue();
+});
+
+it('keeps the planted session id after a failed social sign-in', function () {
+    // The control case: the request really uses the planted session ID.
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->andThrow(new FailedToVerifyToken('The token is invalid.'));
+    $plantedId = Str::random(40);
+    $plantedToken = Str::random(40);
+    app('session')->driver()->getHandler()->write($plantedId, serialize(['_token' => $plantedToken]));
+
+    // A JSON test request sends cookies only with credentials.
+    withCookie(session()->getName(), $plantedId)
+        ->withCredentials()
+        ->postJson('/app/firebase/sign-in', ['credential' => 'token-1'])
+        ->assertStatus(422);
+
+    expect(session()->getId())->toBe($plantedId)
+        ->and(session()->token())->toBe($plantedToken);
+});
+
+it('never deletes an account that a closed panel blocks for another reason', function (Closure $arrange) {
+    // The Firebase account can belong to another app on the same project. Only the closed panel may cause a deletion.
+    config()->set('filament-firebase-auth.delete_accounts', 'orphaned');
+    socialSignInPlugin('admin')->providers([SocialProvider::Google]);
+    socialSignInReloadRoutes();
+    $firebaseUser = $arrange();
+
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('verifyIdToken')->once()->with('token-1', true)->andReturn(socialSignInToken('uid-1'));
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn($firebaseUser);
+    $firebase->shouldNotReceive('deleteUser');
+
+    postJson('/admin/firebase/sign-in', ['credential' => 'token-1'])
+        ->assertStatus(422)
+        ->assertExactJson(['message' => __('filament-panels::auth/pages/login.messages.failed')]);
+
+    expect(auth('admin')->check())->toBeFalse()
+        ->and(FirebaseIdentity::query()->where('firebase_uid', 'uid-1')->count())->toBe(0);
+})->with([
+    'unverified email with a record' => function () {
+        Admin::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+
+        return userRecord(['emailVerified' => false]);
+    },
+    'record linked to another uid' => function () {
+        $admin = Admin::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+        $admin->firebaseIdentity()->create(['firebase_uid' => 'uid-2', 'synced_at' => now()]);
+
+        return userRecord();
+    },
+]);
 
 it('redirects to the intended url', function () {
     $firebase = mockFirebase();

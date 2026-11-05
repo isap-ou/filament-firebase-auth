@@ -1,6 +1,10 @@
 # Security Policy
 
-If you find a security issue, send an email to contact@isapp.be.
+If you find a security issue, report it in private in one of two ways:
+
+- Use **Report a vulnerability** on the Security tab of the repository: https://github.com/isap-ou/filament-firebase-auth/security/advisories/new
+- Or send an email to contact@isapp.be.
+
 Do not report it in a public GitHub issue, discussion or pull request.
 
 Please give:
@@ -11,7 +15,7 @@ Please give:
 
 Do not send real passwords, ID tokens, service account keys or other secrets.
 
-We reply to the email and tell you the next steps.
+We reply and tell you the next steps.
 We publish a fix and a security advisory before we give the details in public.
 
 ## Supported versions

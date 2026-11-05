@@ -10,6 +10,7 @@ use Isapp\FilamentFirebaseAuth\Actions\Accounts\DeleteFirebaseUserIfAllowed;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\DetectPasswordProvider;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\SetFirebaseEmailVerified;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\VerifyFirebaseEmail;
 use Isapp\FilamentFirebaseAuth\Enums\DeleteAccounts;
 use Isapp\FilamentFirebaseAuth\Enums\DeletionReason;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
@@ -207,7 +208,14 @@ trait HasFirebaseIdentity
             return false;
         }
 
-        app(SetFirebaseEmailVerified::class)->handle($identity->firebase_uid, $verified);
+        if ($verified) {
+            // The verification link proves the local email only, never the current Firebase email.
+            if (! app(VerifyFirebaseEmail::class)->handle($identity->firebase_uid, $this->getEmailForVerification())) {
+                return false;
+            }
+        } else {
+            app(SetFirebaseEmailVerified::class)->handle($identity->firebase_uid, false);
+        }
 
         return $identity->forceFill([
             'email_verified_at' => $verified ? $identity->freshTimestamp() : null,

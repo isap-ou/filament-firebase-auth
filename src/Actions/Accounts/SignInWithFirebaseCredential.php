@@ -2,6 +2,7 @@
 
 namespace Isapp\FilamentFirebaseAuth\Actions\Accounts;
 
+use Closure;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
 use Illuminate\Auth\AuthenticationException;
@@ -62,7 +63,7 @@ class SignInWithFirebaseCredential
         }
 
         try {
-            $user = $this->resolveAndPersist($credential, $panel, $plugin, $provider->getModel());
+            $user = $this->resolveAndPersist($credential, $panel, $plugin, $provider->getModel(), $provider->getQueryCallback());
         } catch (FirebaseException $exception) {
             // A transport message can contain the request URL with the API key, so the log names the class only.
             $this->logger->error('Firebase failed during a social sign-in.', ['exception' => $exception::class]);
@@ -87,13 +88,15 @@ class SignInWithFirebaseCredential
     }
 
     /**
+     * The `withQuery()` callback of the user provider limits the local record, as on the login form.
+     *
      * @param  class-string<Model&Authenticatable>  $model
      */
-    protected function resolveAndPersist(#[SensitiveParameter] string $credential, Panel $panel, FilamentFirebaseAuthPlugin $plugin, string $model): Model & Authenticatable
+    protected function resolveAndPersist(#[SensitiveParameter] string $credential, Panel $panel, FilamentFirebaseAuthPlugin $plugin, string $model, ?Closure $queryCallback): Model & Authenticatable
     {
         $firebaseUser = $this->socialSignInMethod->verify($credential, $plugin->getProviders());
         $createOnSignIn = $plugin->shouldCreateOnSignIn();
-        $resolved = $this->resolveLocalUser->handle($firebaseUser, $model, $createOnSignIn);
+        $resolved = $this->resolveLocalUser->handle($firebaseUser, $model, $createOnSignIn, $queryCallback);
 
         if ($resolved->resolution === Resolution::Blocked) {
             if (! $createOnSignIn) {

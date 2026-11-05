@@ -28,12 +28,73 @@ it('reports an unverified email from the link', function () {
 
 it('marks the email as verified in firebase and locally', function () {
     $firebase = mockFirebase();
-    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['emailVerified' => true])->andReturn(userRecord());
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord(['emailVerified' => false]));
+    $firebase->shouldReceive('updateUser')->once()
+        ->with('uid-1', ['email' => 'jane@example.com', 'emailVerified' => true])->andReturn(userRecord());
 
     $user = linkedUser(verified: false);
 
     expect($user->markEmailAsVerified())->toBeTrue()
         ->and($user->firebaseIdentity?->email_verified_at)->not->toBeNull()
+        ->and($user->firebaseIdentity?->fresh()?->email_verified_at)->not->toBeNull();
+});
+
+it('compares the local and the firebase email without case when it marks the email as verified', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord(['emailVerified' => false]));
+    $firebase->shouldReceive('updateUser')->once()
+        ->with('uid-1', ['email' => 'jane@example.com', 'emailVerified' => true])->andReturn(userRecord());
+
+    $user = linkedUser(verified: false, email: 'Jane@Example.com');
+
+    expect($user->markEmailAsVerified())->toBeTrue();
+});
+
+it('refuses to mark the email as verified when the firebase email differs from the local email', function () {
+    // The verification link proves the local email only. Firebase can hold another email until the next sync.
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')
+        ->andReturn(userRecord(['email' => 'boss@example.com', 'emailVerified' => false]));
+    $firebase->shouldNotReceive('updateUser');
+
+    $user = linkedUser(verified: false);
+
+    expect($user->markEmailAsVerified())->toBeFalse()
+        ->and($user->firebaseIdentity?->fresh()?->email_verified_at)->toBeNull();
+});
+
+it('refuses to mark the email as verified when firebase has no email or no user', function (Closure $answer) {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')->andReturnUsing($answer);
+    $firebase->shouldNotReceive('updateUser');
+
+    $user = linkedUser(verified: false);
+
+    expect($user->markEmailAsVerified())->toBeFalse()
+        ->and($user->firebaseIdentity?->fresh()?->email_verified_at)->toBeNull();
+})->with([
+    'no email' => fn () => userRecord(['email' => null, 'emailVerified' => false]),
+    'no user' => fn () => throw new UserNotFound('No user'),
+]);
+
+it('keeps the local flag when firebase fails to mark the email as verified', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord(['emailVerified' => false]));
+    $firebase->shouldReceive('updateUser')->once()->andThrow(new ApiConnectionFailed('Firebase is down'));
+
+    $user = linkedUser(verified: false);
+
+    expect(fn () => $user->markEmailAsVerified())->toThrow(ApiConnectionFailed::class)
+        ->and($user->firebaseIdentity?->fresh()?->email_verified_at)->toBeNull();
+});
+
+it('keeps the local flag when firebase fails to mark the email as unverified', function () {
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('updateUser')->once()->andThrow(new ApiConnectionFailed('Firebase is down'));
+
+    $user = linkedUser(verified: true);
+
+    expect(fn () => $user->markEmailAsUnverified())->toThrow(ApiConnectionFailed::class)
         ->and($user->firebaseIdentity?->fresh()?->email_verified_at)->not->toBeNull();
 });
 

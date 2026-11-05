@@ -7,7 +7,7 @@ use Filament\Support\Contracts\HasLabel;
 /**
  * The Firebase sign-in providers that can get a button on the login page.
  *
- * The value is the Firebase provider ID. Custom `oidc.*` and `saml.*` providers are not in v1.
+ * The value is the Firebase provider ID. Custom `oidc.*` and `saml.*` providers are not supported yet.
  */
 enum SocialProvider: string implements HasLabel
 {

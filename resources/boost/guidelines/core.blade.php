@@ -15,6 +15,7 @@ use Isapp\FilamentFirebaseAuth\Pages\EditProfile;
 use Isapp\FilamentFirebaseAuth\Pages\Register;
 
 $panel
+    ->id('admin') // call ->id() before ->plugin(): the plugin reads the panel middleware
     ->authGuard('admin') // the guard's provider uses the `firebase` driver
     ->authPasswordBroker('admins') // the broker uses the `firebase` driver
     ->login()

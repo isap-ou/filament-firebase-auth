@@ -1,9 +1,10 @@
 <?php
 
-namespace Isapp\FilamentFirebaseAuth\Actions;
+namespace Isapp\FilamentFirebaseAuth\Actions\LocalUsers;
 
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
+use Isapp\FilamentFirebaseAuth\Actions\Identity\RefreshFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Kreait\Firebase\Auth\UserRecord;

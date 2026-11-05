@@ -1,6 +1,6 @@
 <?php
 
-namespace Isapp\FilamentFirebaseAuth\Actions;
+namespace Isapp\FilamentFirebaseAuth\Actions\Firebase;
 
 use Kreait\Firebase\Auth\UserRecord;
 use SensitiveParameter;
@@ -26,7 +26,7 @@ class FindOrCreateFirebaseUser
     {
         $user = $this->findFirebaseUserByEmail->handle($email);
 
-        if ($user !== null) {
+        if ($user instanceof UserRecord) {
             return [$user, false];
         }
 

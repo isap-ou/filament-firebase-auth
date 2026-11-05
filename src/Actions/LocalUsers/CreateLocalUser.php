@@ -1,6 +1,6 @@
 <?php
 
-namespace Isapp\FilamentFirebaseAuth\Actions;
+namespace Isapp\FilamentFirebaseAuth\Actions\LocalUsers;
 
 use Filament\Panel;
 use Illuminate\Contracts\Auth\Authenticatable;

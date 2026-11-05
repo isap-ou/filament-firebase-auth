@@ -1,0 +1,85 @@
+{
+    "name": "isapp/filament-firebase-auth",
+    "description": "Firebase Authentication for Filament panels through Laravel auth contracts.",
+    "keywords": [
+        "isapp",
+        "laravel",
+        "filamentphp",
+        "filament",
+        "filament-plugin",
+        "firebase",
+        "firebase-auth",
+        "filament-firebase-auth"
+    ],
+    "homepage": "https://github.com/isapp/filament-firebase-auth",
+    "support": {
+        "issues": "https://github.com/isapp/filament-firebase-auth/issues",
+        "source": "https://github.com/isapp/filament-firebase-auth"
+    },
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "ISAPP",
+            "email": "andrii.trush@isapp.be",
+            "role": "Developer"
+        },
+        {
+            "name": "ISAP OÜ",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "filament/filament": "^5.0",
+        "illuminate/contracts": "^12.4|^13.0",
+        "illuminate/database": "^12.4|^13.0",
+        "kreait/laravel-firebase": "^7.2",
+        "spatie/laravel-package-tools": "^1.15"
+    },
+    "require-dev": {
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.0",
+        "mockery/mockery": "^1.6",
+        "orchestra/testbench": "^10.0|^11.0",
+        "pestphp/pest": "^4.0|^5.0",
+        "pestphp/pest-plugin-laravel": "^4.0|^5.0",
+        "pestphp/pest-plugin-livewire": "^4.0|^5.0",
+        "rector/rector": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Isapp\\FilamentFirebaseAuth\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Isapp\\FilamentFirebaseAuth\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "post-autoload-dump": "@php ./vendor/bin/testbench package:discover --ansi",
+        "analyse": "phpstan analyse --memory-limit=1G",
+        "lint": "pint",
+        "refactor": "rector",
+        "test": "pest",
+        "test:lint": "pint --test",
+        "test:refactor": "rector --dry-run"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Isapp\\FilamentFirebaseAuth\\FilamentFirebaseAuthServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "composer/package-versions-deprecated": true,
+            "pestphp/pest-plugin": true,
+            "phpstan/extension-installer": true
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

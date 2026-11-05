@@ -1,0 +1,28 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create(config('filament-firebase-auth.table'), function (Blueprint $table) {
+            $table->id();
+            $table->string('firebase_uid');
+            $table->morphs('authenticatable');
+            $table->timestamp('email_verified_at')->nullable();
+            $table->timestamp('synced_at')->nullable();
+            $table->timestamps();
+
+            $table->unique(['authenticatable_type', 'firebase_uid']);
+            $table->unique(['authenticatable_type', 'authenticatable_id']);
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists(config('filament-firebase-auth.table'));
+    }
+};

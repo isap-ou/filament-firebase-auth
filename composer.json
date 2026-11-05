@@ -11,10 +11,10 @@
         "firebase-auth",
         "filament-firebase-auth"
     ],
-    "homepage": "https://github.com/isapp/filament-firebase-auth",
+    "homepage": "https://github.com/isap-ou/filament-firebase-auth",
     "support": {
-        "issues": "https://github.com/isapp/filament-firebase-auth/issues",
-        "source": "https://github.com/isapp/filament-firebase-auth"
+        "issues": "https://github.com/isap-ou/filament-firebase-auth/issues",
+        "source": "https://github.com/isap-ou/filament-firebase-auth"
     },
     "license": "MIT",
     "authors": [

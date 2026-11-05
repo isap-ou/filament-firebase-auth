@@ -138,7 +138,7 @@ Open **Authentication → Sign-in method**.
 
 Open **Authentication → Settings → Authorized domains** and click **Add domain**.
 Add each domain that serves a Firebase panel, for example `admin.example.com`.
-For local development, add `localhost` too: new projects no longer include it by default.
+For local development, add `localhost` too, but only to a development project: new projects no longer include it by default, and Firebase discourages it in production.
 Without the domain, the social sign-in popup fails with `auth/unauthorized-domain`.
 
 Firebase guide: the "Authorized domains" note in [Email link authentication](https://firebase.google.com/docs/auth/web/email-link-auth).
@@ -204,6 +204,11 @@ The web `apiKey` is not a secret. It only identifies your Firebase project, and 
 Still, restrict it: in the Google Cloud console, open **APIs & Services → Credentials** and edit the key.
 Under **Application restrictions**, allow only your panel domains and your `authDomain` (`your-project-id.firebaseapp.com`) as HTTP referrers. The sign-in popup runs on the `authDomain` and uses the key too. Under **API restrictions**, allow only the APIs that Firebase Authentication needs (Identity Toolkit API and Token Service API).
 Test the change on a test key first, because a wrong restriction breaks the sign-in.
+
+On a shared Firebase project, the web apps of the project often use the same browser key.
+A restriction for the panel alone then breaks the other apps: their domains are not allowed, and the APIs they need are blocked.
+So either keep the domains and the APIs of all apps that use the key in the restriction,
+or create a separate browser key for the panel (**APIs & Services → Credentials → Create credentials → API key**), put it in `FIREBASE_WEB_API_KEY`, and restrict only that key.
 Read [Learn about using and managing API keys for Firebase](https://firebase.google.com/docs/projects/api-keys).
 
 ### 6. Recommended settings
@@ -212,6 +217,7 @@ Read [Learn about using and managing API keys for Firebase](https://firebase.goo
   The plugin works with it on or off, and shows the same failure message for every failed sign-in either way.
 - **Password policy:** open **Authentication → Settings → Password policy** to require a minimum length or character types.
   Filament's registration and profile forms check Laravel's `Password::defaults()`. Set the same rules there, so the forms check them too.
+  On a shared project, the policy applies to all apps. If you make it require an update of non-compliant passwords at sign-in, existing users of the other apps can be blocked until they change their password.
 - **Email templates:** the plugin does not use the Firebase email templates.
   Password reset, email verification and email change emails come from Filament and Laravel. Configure Laravel mail (`MAIL_MAILER` and the rest) for them.
 
@@ -224,6 +230,17 @@ You can develop without a real Firebase project. The [Firebase Auth Emulator](ht
 ```bash
 npm install --save-dev --save-exact firebase-tools
 npx --no-install firebase-tools emulators:start --only auth --project demo-your-app
+```
+
+Without a `firebase.json`, the Auth emulator listens on its default port `9099`.
+To fix the host and the port, add a `firebase.json` to your app, as the plugin does:
+
+```json
+{
+  "emulators": {
+    "auth": { "host": "127.0.0.1", "port": 9099 }
+  }
+}
 ```
 
 Then set in `.env`:
@@ -239,6 +256,10 @@ Without it, `kreait/firebase-php` looks for Google credentials on your machine: 
 Email and password sign-in, registration, password reset, verification, the profile page and `make:filament-user` work against the emulator.
 The social buttons do not: test them against a real development project.
 The emulator keeps its accounts in memory. They are gone after a restart.
+
+`kreait/firebase-php` reads `FIREBASE_AUTH_EMULATOR_HOST` from the process environment, not from the Laravel config.
+After `php artisan config:cache`, Laravel no longer loads `.env`, so the value in `.env` has no effect.
+Then set the variable in the real environment of the process (shell, Docker, process manager), or do not cache the config in local development.
 
 ### 8. Firebase troubleshooting
 

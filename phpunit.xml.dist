@@ -20,6 +20,14 @@
             <directory>tests</directory>
         </testsuite>
     </testsuites>
+    <php>
+        <!--
+            Test-only encryption key. It is not a secret and protects no data.
+            Livewire and session tests need an app key. A fresh clone and CI have no .env file.
+            A key that is already set in the environment takes precedence.
+        -->
+        <env name="APP_KEY" value="base64:GVkSMs8Zo+UZ7y3BQ9ONCmjxZkbOpgq2xrSFVPDNVaQ="/>
+    </php>
     <source>
         <include>
             <directory suffix=".php">./src</directory>

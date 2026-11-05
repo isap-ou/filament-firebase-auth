@@ -1,0 +1,7 @@
+# Larastan boots this package through Testbench and reads this file
+# (Larastan\Larastan\ApplicationResolver::resolve()).
+# Package discovery does not include the root package outside the Testbench CLI.
+# This list registers the plugin's service provider, so the package config is loaded during analysis.
+# The Pest test case does not read this list. It registers its providers in tests/TestCase.php.
+providers:
+  - Isapp\FilamentFirebaseAuth\FilamentFirebaseAuthServiceProvider

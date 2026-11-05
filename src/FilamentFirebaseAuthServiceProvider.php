@@ -2,10 +2,10 @@
 
 namespace Isapp\FilamentFirebaseAuth;
 
-use Isapp\FilamentFirebaseAuth\Actions\CheckFirebasePassword;
-use Isapp\FilamentFirebaseAuth\Actions\CreateLocalUser;
-use Isapp\FilamentFirebaseAuth\Actions\FindFirebaseUser;
-use Isapp\FilamentFirebaseAuth\Actions\SyncLocalUser;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\CheckFirebasePassword;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\CreateLocalUser;
+use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\SyncLocalUser;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Spatie\LaravelPackageTools\Commands\InstallCommand;

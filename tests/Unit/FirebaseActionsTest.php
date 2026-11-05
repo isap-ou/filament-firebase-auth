@@ -1,14 +1,14 @@
 <?php
 
-use Isapp\FilamentFirebaseAuth\Actions\CheckFirebasePassword;
-use Isapp\FilamentFirebaseAuth\Actions\CreateFirebaseUser;
-use Isapp\FilamentFirebaseAuth\Actions\DeleteFirebaseUser;
-use Isapp\FilamentFirebaseAuth\Actions\DetectPasswordProvider;
-use Isapp\FilamentFirebaseAuth\Actions\FindFirebaseUser;
-use Isapp\FilamentFirebaseAuth\Actions\FindFirebaseUserByEmail;
-use Isapp\FilamentFirebaseAuth\Actions\FindOrCreateFirebaseUser;
-use Isapp\FilamentFirebaseAuth\Actions\LinkFirebaseIdentity;
-use Isapp\FilamentFirebaseAuth\Actions\SetFirebaseEmailVerified;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\CheckFirebasePassword;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\CreateFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\DeleteFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\DetectPasswordProvider;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUserByEmail;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindOrCreateFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\SetFirebaseEmailVerified;
+use Isapp\FilamentFirebaseAuth\Actions\Identity\LinkFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\Admin;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;

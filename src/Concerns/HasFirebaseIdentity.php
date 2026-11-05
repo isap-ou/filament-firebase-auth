@@ -6,9 +6,9 @@ use Illuminate\Auth\Notifications\VerifyEmail;
 use Illuminate\Auth\Passwords\CanResetPassword;
 use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Illuminate\Support\Str;
-use Isapp\FilamentFirebaseAuth\Actions\DetectPasswordProvider;
-use Isapp\FilamentFirebaseAuth\Actions\FindFirebaseUser;
-use Isapp\FilamentFirebaseAuth\Actions\SetFirebaseEmailVerified;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\DetectPasswordProvider;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\SetFirebaseEmailVerified;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 
 /**

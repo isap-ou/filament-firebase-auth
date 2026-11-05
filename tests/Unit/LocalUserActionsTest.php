@@ -1,8 +1,8 @@
 <?php
 
 use Illuminate\Database\QueryException;
-use Isapp\FilamentFirebaseAuth\Actions\CreateLocalUser;
-use Isapp\FilamentFirebaseAuth\Actions\SyncLocalUser;
+use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\CreateLocalUser;
+use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\SyncLocalUser;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\LegacyUser;

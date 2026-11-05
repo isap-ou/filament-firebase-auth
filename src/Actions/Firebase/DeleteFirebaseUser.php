@@ -1,6 +1,6 @@
 <?php
 
-namespace Isapp\FilamentFirebaseAuth\Actions;
+namespace Isapp\FilamentFirebaseAuth\Actions\Firebase;
 
 use Kreait\Firebase\Contract\Auth;
 use Kreait\Firebase\Exception\Auth\UserNotFound;

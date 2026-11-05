@@ -30,7 +30,7 @@ class ResolveLocalUser
      * 3. No link, no record, and the panel creates records on sign-in: offer an unsaved record.
      * 4. Otherwise: block.
      *
-     * A disabled Firebase user is always blocked.
+     * A disabled Firebase user is always blocked. A Firebase user without an email is blocked unless a link exists.
      *
      * `$constraints` adds the host conditions of the user provider (extra credentials and `withQuery()`),
      * as Laravel's eloquent driver does. A linked record or a record with the same email that fails them
@@ -55,10 +55,13 @@ class ResolveLocalUser
             return $this->linked($instance, $identity, $constraints);
         }
 
+        // A record needs an email. Some providers (for example Twitter without the email permission) give none.
+        if ($firebaseUser->email === null) {
+            return $this->blocked();
+        }
+
         /** @var (Model&Authenticatable)|null $user */
-        $user = $firebaseUser->email === null
-            ? null
-            : $instance->newQuery()->where('email', $firebaseUser->email)->first();
+        $user = $instance->newQuery()->where('email', $firebaseUser->email)->first();
 
         if ($user !== null) {
             return $this->meetsConstraints($user, $constraints) ? $this->linkedByEmail($user, $firebaseUser) : $this->blocked();
@@ -68,9 +71,7 @@ class ResolveLocalUser
             return $this->blocked();
         }
 
-        if ($firebaseUser->email !== null) {
-            $instance->setAttribute('email', $firebaseUser->email);
-        }
+        $instance->setAttribute('email', $firebaseUser->email);
 
         return new ResolvedUser(Resolution::New, $instance);
     }

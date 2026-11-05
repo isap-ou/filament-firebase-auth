@@ -155,3 +155,20 @@ it('rolls back the new record when the link fails', function () {
         ->toThrow(LogicException::class)
         ->and(User::query()->where('email', 'jane@example.com')->exists())->toBeFalse();
 });
+
+it('blocks a firebase user without an email when no link exists', function () {
+    // For example, a Twitter account without the email permission. A record needs an email.
+    $resolved = app(ResolveLocalUser::class)->handle(userRecord(['email' => null, 'emailVerified' => false]), User::class, true);
+
+    expect($resolved->resolution)->toBe(Resolution::Blocked)
+        ->and(User::query()->count())->toBe(0);
+});
+
+it('uses the linked record of a firebase user without an email', function () {
+    $user = linkedUser();
+
+    $resolved = app(ResolveLocalUser::class)->handle(userRecord(['email' => null]), User::class, true);
+
+    expect($resolved->resolution)->toBe(Resolution::Linked)
+        ->and($resolved->user?->getKey())->toBe($user->getKey());
+});

@@ -7,6 +7,8 @@ use Illuminate\Console\Application as ConsoleApplication;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Isapp\FilamentFirebaseAuth\Actions\Identity\LinkFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Commands\MakeFirebaseUserCommand;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
@@ -14,6 +16,7 @@ use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\Admin;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\LegacyUser;
 use Kreait\Firebase\Auth\UserRecord;
 use Kreait\Firebase\Exception\Auth\UserNotFound;
+use Symfony\Component\Console\Output\BufferedOutput;
 
 use function Pest\Laravel\artisan;
 
@@ -44,6 +47,17 @@ function makeUserFailingLocalStep(): void
             throw new RuntimeException('The local step failed.');
         }
     });
+}
+
+/**
+ * Binds a `CreatesLocalUsers` mock that fails the test when the command calls it.
+ */
+function makeUserForbiddenLocalStep(): void
+{
+    $createsLocalUsers = Mockery::mock(CreatesLocalUsers::class);
+    $createsLocalUsers->shouldNotReceive('handle');
+
+    app()->instance(CreatesLocalUsers::class, $createsLocalUsers);
 }
 
 it('resolves the command to the plugin class', fn () => expect(Artisan::all()['make:filament-user'])->toBeInstanceOf(MakeFirebaseUserCommand::class));
@@ -111,6 +125,7 @@ it('links an existing firebase account without changing its password', function 
 });
 
 it('refuses an existing firebase account with an unverified email', function () {
+    makeUserForbiddenLocalStep();
     $firebase = mockFirebase();
     $firebase->shouldReceive('getUserByEmail')->once()->with('ada@example.com')
         ->andReturn(userRecord(['localId' => 'uid-7', 'email' => 'ada@example.com', 'emailVerified' => false]));
@@ -164,17 +179,75 @@ it('never deletes an existing account when the local step fails', function () {
         ->toThrow(RuntimeException::class, 'The local step failed.');
 });
 
-it('rolls back the record when the link fails', function () {
+it('refuses a disabled firebase account', function () {
+    makeUserForbiddenLocalStep();
     $firebase = mockFirebase();
     $firebase->shouldReceive('getUserByEmail')->once()
         ->andReturn(userRecord(['localId' => 'uid-7', 'email' => 'ada@example.com', 'disabled' => true]));
+    $firebase->shouldNotReceive('createUser');
     $firebase->shouldNotReceive('deleteUser');
 
-    expect(fn () => artisan('make:filament-user', makeUserOptions())->run())
-        ->toThrow(LogicException::class, 'The Firebase user is disabled.');
+    artisan('make:filament-user', makeUserOptions())
+        ->expectsOutputToContain(__('filament-firebase-auth::command.disabled_account', ['email' => 'ada@example.com']))
+        ->doesntExpectOutputToContain(__('filament-firebase-auth::command.existing_account', ['email' => 'ada@example.com']))
+        ->assertFailed();
 
     expect(Admin::query()->count())->toBe(0)
         ->and(FirebaseIdentity::query()->count())->toBe(0);
+});
+
+it('refuses a firebase account that another record of the model already has', function () {
+    $other = Admin::query()->create(['name' => 'Old', 'email' => 'old@example.com']);
+    $other->firebaseIdentity()->create(['firebase_uid' => 'uid-7', 'synced_at' => now()]);
+    makeUserForbiddenLocalStep();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->once()
+        ->andReturn(userRecord(['localId' => 'uid-7', 'email' => 'ada@example.com']));
+    $firebase->shouldNotReceive('createUser');
+    $firebase->shouldNotReceive('deleteUser');
+
+    artisan('make:filament-user', makeUserOptions())
+        ->expectsOutputToContain(__('filament-firebase-auth::command.linked_account', ['email' => 'ada@example.com']))
+        ->doesntExpectOutputToContain(__('filament-firebase-auth::command.existing_account', ['email' => 'ada@example.com']))
+        ->assertFailed();
+
+    expect(Admin::query()->pluck('email')->all())->toBe(['old@example.com'])
+        ->and(FirebaseIdentity::query()->count())->toBe(1);
+});
+
+it('rolls back the record when the link fails', function () {
+    $link = Mockery::mock(LinkFirebaseIdentity::class);
+    $link->shouldReceive('handle')->once()->andThrow(new LogicException('The link failed.'));
+    app()->instance(LinkFirebaseIdentity::class, $link);
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->once()
+        ->andReturn(userRecord(['localId' => 'uid-7', 'email' => 'ada@example.com']));
+    $firebase->shouldNotReceive('deleteUser');
+
+    expect(fn () => artisan('make:filament-user', makeUserOptions())->run())
+        ->toThrow(LogicException::class, 'The link failed.');
+
+    expect(Admin::query()->count())->toBe(0)
+        ->and(FirebaseIdentity::query()->count())->toBe(0);
+});
+
+it('keeps the first error when the cleanup fails', function () {
+    $log = Log::spy();
+    makeUserFailingLocalStep();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->once()->andThrow(new UserNotFound('No user'));
+    $firebase->shouldReceive('createUser')->once()->andReturn(userRecord(['localId' => 'uid-9', 'email' => 'ada@example.com']));
+    $firebase->shouldReceive('deleteUser')->once()->with('uid-9')->andThrow(new RuntimeException('secret transport detail'));
+    $output = new BufferedOutput;
+
+    expect(fn () => Artisan::call('make:filament-user', makeUserOptions(), $output))
+        ->toThrow(RuntimeException::class, 'The local step failed.');
+
+    expect($output->fetch())->toContain(__('filament-firebase-auth::command.cleanup_failed', ['uid' => 'uid-9']));
+    $log->shouldHaveReceived('error')->once()->withArgs(
+        fn (string $message, array $context): bool => $context === ['exception' => RuntimeException::class, 'uid' => 'uid-9']
+            && ! str_contains($message . json_encode($context), 'secret transport detail'),
+    );
 });
 
 it('falls back to filament for non firebase panels', function () {

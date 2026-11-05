@@ -10,7 +10,6 @@ use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUserByEmail;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\CreateLocalUser;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\SyncLocalUser;
 use Isapp\FilamentFirebaseAuth\Auth\FirebaseUserProvider;
-use Isapp\FilamentFirebaseAuth\Commands\MakeFirebaseUserCommand;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
 use Isapp\FilamentFirebaseAuth\Contracts\DecidesAccountDeletion;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
@@ -82,6 +81,6 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
      */
     private function registerCommands(): void
     {
-        $this->app->booted(fn () => $this->commands([MakeFirebaseUserCommand::class]));
+        $this->app->booted(fn () => $this->commands([Commands\MakeFirebaseUserCommand::class]));
     }
 }

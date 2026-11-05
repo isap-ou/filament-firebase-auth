@@ -11,8 +11,9 @@ use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindOrCreateFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\LinkFirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Auth\FirebaseUserProvider;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
+use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Kreait\Firebase\Auth\UserRecord;
-use Kreait\Firebase\Exception\FirebaseException;
+use Psr\Log\LoggerInterface;
 use Throwable;
 
 use function Laravel\Prompts\password;
@@ -80,12 +81,11 @@ class MakeFirebaseUserCommand extends MakeUserCommand
      * Finds or creates the Firebase account, then creates the local record and its link.
      *
      * A new account gets `emailVerified = true`, because an admin creates it on purpose.
-     * An existing account keeps its password and its verification. An existing account with an
-     * unverified email is refused, because anyone can create such an account with another
-     * person's email (the rule of `ResolveLocalUser` case 2).
+     * An existing account keeps its password and its verification. The command refuses an existing
+     * account that cannot be linked, before any local work (see `ensureExistingAccountLinkable()`).
      * When the local step fails, the command deletes the account only if it created that account.
      *
-     * @throws FailureCommandOutput when the existing account has an unverified email.
+     * @throws FailureCommandOutput when the command refuses the existing account.
      */
     protected function createUser(): Model & Authenticatable
     {
@@ -98,13 +98,9 @@ class MakeFirebaseUserCommand extends MakeUserCommand
         [$firebaseUser, $created] = $this->laravel->make(FindOrCreateFirebaseUser::class)
             ->handle($data['email'], $data['password'], $data['name'], verified: true);
 
-        if (! $created && ! $firebaseUser->emailVerified) {
-            $this->components->error(__('filament-firebase-auth::command.unverified_account', ['email' => $data['email']]));
-
-            throw new FailureCommandOutput;
-        }
-
         if (! $created) {
+            $this->ensureExistingAccountLinkable($firebaseUser, $data['email']);
+
             $this->components->warn(__('filament-firebase-auth::command.existing_account', ['email' => $data['email']]));
         }
 
@@ -117,6 +113,37 @@ class MakeFirebaseUserCommand extends MakeUserCommand
 
             throw $exception;
         }
+    }
+
+    /**
+     * Refuses an existing account before `CreatesLocalUsers` runs. A host action can have side
+     * effects (mail, jobs) that a database rollback does not undo.
+     *
+     * - A disabled account cannot be linked.
+     * - An unverified email is refused, because anyone can create such an account with another
+     *   person's email (the rule of `ResolveLocalUser` case 2).
+     * - An account that another record of the model already has cannot get a second record.
+     *
+     * @throws FailureCommandOutput
+     */
+    protected function ensureExistingAccountLinkable(UserRecord $firebaseUser, string $email): void
+    {
+        $model = $this->getUserModel();
+
+        $error = match (true) {
+            $firebaseUser->disabled => 'disabled_account',
+            ! $firebaseUser->emailVerified => 'unverified_account',
+            FirebaseIdentity::query()->forFirebaseUid($firebaseUser->uid, (new $model)->getMorphClass())->exists() => 'linked_account',
+            default => null,
+        };
+
+        if ($error === null) {
+            return;
+        }
+
+        $this->components->error(__("filament-firebase-auth::command.{$error}", ['email' => $email]));
+
+        throw new FailureCommandOutput;
     }
 
     /**
@@ -138,13 +165,19 @@ class MakeFirebaseUserCommand extends MakeUserCommand
 
     /**
      * A failed deletion does not hide the first error. The command names the account,
-     * so that the admin can delete it by hand.
+     * so that the admin can delete it by hand. The log gets the exception class only,
+     * because a transport message can contain the request URL with the API key.
      */
     protected function deleteCreatedAccount(UserRecord $firebaseUser): void
     {
         try {
             $this->laravel->make(DeleteFirebaseUser::class)->handle($firebaseUser->uid);
-        } catch (FirebaseException) {
+        } catch (Throwable $exception) {
+            $this->laravel->make(LoggerInterface::class)->error('The command could not delete the Firebase account that it created.', [
+                'exception' => $exception::class,
+                'uid' => $firebaseUser->uid,
+            ]);
+
             $this->components->error(__('filament-firebase-auth::command.cleanup_failed', ['uid' => $firebaseUser->uid]));
         }
     }

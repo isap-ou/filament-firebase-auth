@@ -3,6 +3,8 @@
 namespace Isapp\FilamentFirebaseAuth\Passwords;
 
 use Closure;
+use Filament\FilamentManager;
+use Filament\Models\Contracts\FilamentUser;
 use Illuminate\Auth\Passwords\PasswordBroker;
 use Illuminate\Auth\Passwords\TokenRepositoryInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
@@ -11,11 +13,10 @@ use Illuminate\Contracts\Auth\UserProvider;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Timebox;
-use Isapp\FilamentFirebaseAuth\Actions\Firebase\ChangeFirebasePassword;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\DetectPasswordProvider;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUserByEmail;
+use Isapp\FilamentFirebaseAuth\Actions\Firebase\ResetFirebasePassword;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\RevokeFirebaseTokens;
-use Isapp\FilamentFirebaseAuth\Actions\Firebase\SetFirebaseEmailVerified;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\UnlinkFirebaseProviders;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\EnsureFirebaseIdentityLinkable;
 use Isapp\FilamentFirebaseAuth\Actions\Identity\LinkFirebaseIdentity;
@@ -80,9 +81,10 @@ class FirebasePasswordBroker extends PasswordBroker
     }
 
     /**
-     * Checks the token, then sets the new password in Firebase and marks the email as verified,
-     * because the reset proves that the person owns the email. Then it links the record and copies
-     * the Firebase state to the link. Then it calls the callback and deletes the token.
+     * Checks the token and the access to the current panel. Then it sets the new password in
+     * Firebase and marks the email as verified, because the reset proves that the person owns the
+     * email. Then it links the record and copies the Firebase state to the link. Then it calls the
+     * callback and deletes the token.
      *
      * The token is deleted last. When a Firebase call fails, the broker logs the exception class,
      * returns `INVALID_USER` (Filament's normal failure message), and the same link works again.
@@ -124,7 +126,7 @@ class FirebasePasswordBroker extends PasswordBroker
                 return static::INVALID_TOKEN;
             }
 
-            if (! is_string($password) || $password === '') {
+            if (! is_string($password) || $password === '' || ! $this->canAccessCurrentPanel($user)) {
                 return static::INVALID_USER;
             }
 
@@ -244,27 +246,49 @@ class FirebasePasswordBroker extends PasswordBroker
 
     /**
      * An unverified Firebase email may belong to an account that another person created with
-     * this email before the owner did (account pre-hijacking). That person can know its password
-     * or can have linked a social provider to it. So, before the reset verifies the email and links
-     * the record, the broker removes every provider except `password` and revokes the refresh tokens.
-     * A verified account keeps its providers and tokens.
+     * this email before the owner did (account pre-hijacking). That person can know its password,
+     * can have sessions, or can have linked a social provider to it. So for an unverified account
+     * the broker first revokes the refresh tokens and removes every provider except `password`.
      *
-     * The email is marked as verified next. The password change then returns the Firebase user
-     * with all changes, and with the new `tokensValidAfterTime`. The link copies that state,
-     * so `email_verified_at` is set and other sessions of the record log out.
+     * Then one Firebase request sets the new password and marks the email as verified. If that
+     * request fails, the email stays unverified, and the next attempt runs these steps again.
+     *
+     * For an unverified account, the broker then reads the user again and removes a provider that
+     * came back in the meantime. A verified account keeps its providers and tokens.
+     *
+     * The link copies the state of the last Firebase answer, so `email_verified_at` is set and
+     * the new `tokensValidAfterTime` logs out other sessions of the record.
      */
     protected function resetInFirebase(Model & Authenticatable $user, UserRecord $firebaseUser, #[SensitiveParameter] string $password): void
     {
-        if (! $firebaseUser->emailVerified) {
-            app(UnlinkFirebaseProviders::class)->handle($firebaseUser->uid, ['password']);
+        $verified = $firebaseUser->emailVerified;
+
+        if (! $verified) {
             app(RevokeFirebaseTokens::class)->handle($firebaseUser->uid);
+            app(UnlinkFirebaseProviders::class)->handle($firebaseUser->uid, ['password']);
         }
 
-        app(SetFirebaseEmailVerified::class)->handle($firebaseUser->uid, true);
+        $changed = app(ResetFirebasePassword::class)->handle($firebaseUser->uid, $password);
 
-        $changed = app(ChangeFirebasePassword::class)->handle($firebaseUser->uid, $password);
+        if (! $verified) {
+            $changed = app(UnlinkFirebaseProviders::class)->handle($firebaseUser->uid, ['password']);
+        }
 
         app(LinkFirebaseIdentity::class)->handle($user, $changed);
+    }
+
+    /**
+     * Filament's reset callback refuses a record without access to the current panel, and the page
+     * shows a failure. The broker checks the same rule before any Firebase write, so such a record
+     * changes nothing in Firebase or in the link table, and keeps its token.
+     */
+    protected function canAccessCurrentPanel(Model & Authenticatable $user): bool
+    {
+        if (! $user instanceof FilamentUser) {
+            return true;
+        }
+
+        return $user->canAccessPanel(app(FilamentManager::class)->getCurrentOrDefaultPanel());
     }
 
     /**

@@ -15,6 +15,7 @@ use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Passwords\FirebasePasswordBroker;
 use Isapp\FilamentFirebaseAuth\Passwords\FirebasePasswordBrokerManager;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
+use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\UserWithoutPanelAccess;
 use Kreait\Firebase\Exception\Auth\ApiConnectionFailed;
 use Kreait\Firebase\Exception\Auth\UserNotFound;
 use Livewire\Features\SupportTesting\Testable;
@@ -208,12 +209,14 @@ it('sets the new password in firebase and verifies the email', function () {
 
     $firebase = mockFirebase();
     $firebase->shouldReceive('getUserByEmail')->with('jane@example.com')->andReturn(userRecord(['emailVerified' => false]));
-    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord(['emailVerified' => false]));
-    $firebase->shouldNotReceive('unlinkProvider');
     $firebase->shouldReceive('revokeRefreshTokens')->once()->with('uid-1');
-    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['emailVerified' => true])->andReturn(userRecord());
-    $firebase->shouldReceive('changeUserPassword')->once()->with('uid-1', 'new-secret-123')
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord(['emailVerified' => false]), userRecord([
+        'validSince' => (string) $validSince->getTimestamp(),
+    ]));
+    $firebase->shouldNotReceive('unlinkProvider');
+    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['password' => 'new-secret-123', 'emailVerified' => true])
         ->andReturn(userRecord(['validSince' => (string) $validSince->getTimestamp()]));
+    $firebase->shouldNotReceive('changeUserPassword');
     $firebase->shouldNotReceive('signInWithEmailAndPassword');
 
     submitNewPassword($token)
@@ -236,10 +239,10 @@ it('links an unlinked record after a reset', function () {
 
     $firebase = mockFirebase();
     $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord(['emailVerified' => false]));
-    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord(['emailVerified' => false]));
     $firebase->shouldReceive('revokeRefreshTokens')->once()->with('uid-1');
-    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['emailVerified' => true])->andReturn(userRecord());
-    $firebase->shouldReceive('changeUserPassword')->once()->with('uid-1', 'new-secret-123')->andReturn(userRecord());
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord(['emailVerified' => false]), userRecord());
+    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['password' => 'new-secret-123', 'emailVerified' => true])
+        ->andReturn(userRecord());
 
     submitNewPassword($token)->assertHasNoFormErrors()->assertNotified(__(Password::PASSWORD_RESET));
 
@@ -252,27 +255,51 @@ it('links an unlinked record after a reset', function () {
         ->and(resetTokenCount())->toBe(0);
 });
 
-it('removes other providers and revokes tokens before it links an unverified account', function () {
+it('revokes tokens and removes other providers before it resets an unverified account', function () {
     $user = User::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
     $token = createResetToken($user);
-    $providers = [
+    $withGoogle = [
         ['providerId' => 'password', 'rawId' => 'jane@example.com', 'email' => 'jane@example.com'],
         ['providerId' => 'google.com', 'rawId' => 'g-other', 'email' => 'jane@example.com'],
     ];
 
     $firebase = mockFirebase();
-    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord(['emailVerified' => false, 'providerUserInfo' => $providers]));
-    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord(['emailVerified' => false, 'providerUserInfo' => $providers]));
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord(['emailVerified' => false, 'providerUserInfo' => $withGoogle]));
+    $firebase->shouldReceive('revokeRefreshTokens')->once()->with('uid-1')->ordered();
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')->ordered()
+        ->andReturn(userRecord(['emailVerified' => false, 'providerUserInfo' => $withGoogle]));
     $firebase->shouldReceive('unlinkProvider')->once()->with('uid-1', ['google.com'])->ordered()
         ->andReturn(userRecord(['emailVerified' => false]));
-    $firebase->shouldReceive('revokeRefreshTokens')->once()->with('uid-1')->ordered();
-    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['emailVerified' => true])->ordered()->andReturn(userRecord());
-    $firebase->shouldReceive('changeUserPassword')->once()->with('uid-1', 'new-secret-123')->ordered()->andReturn(userRecord());
+    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['password' => 'new-secret-123', 'emailVerified' => true])->ordered()
+        ->andReturn(userRecord());
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')->ordered()->andReturn(userRecord());
 
     submitNewPassword($token)->assertHasNoFormErrors()->assertNotified(__(Password::PASSWORD_RESET));
 
     expect($user->refresh()->firebaseIdentity?->firebase_uid)->toBe('uid-1')
         ->and(resetTokenCount())->toBe(0);
+});
+
+it('removes a provider again when it comes back during the reset', function () {
+    $user = User::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+    $token = createResetToken($user);
+    $withGoogle = [
+        ['providerId' => 'password', 'rawId' => 'jane@example.com', 'email' => 'jane@example.com'],
+        ['providerId' => 'google.com', 'rawId' => 'g-other', 'email' => 'jane@example.com'],
+    ];
+
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord(['emailVerified' => false]));
+    $firebase->shouldReceive('revokeRefreshTokens')->once()->with('uid-1')->ordered();
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')->ordered()->andReturn(userRecord(['emailVerified' => false]));
+    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['password' => 'new-secret-123', 'emailVerified' => true])->ordered()
+        ->andReturn(userRecord(['providerUserInfo' => $withGoogle]));
+    $firebase->shouldReceive('getUser')->once()->with('uid-1')->ordered()->andReturn(userRecord(['providerUserInfo' => $withGoogle]));
+    $firebase->shouldReceive('unlinkProvider')->once()->with('uid-1', ['google.com'])->ordered()->andReturn(userRecord());
+
+    submitNewPassword($token)->assertHasNoFormErrors()->assertNotified(__(Password::PASSWORD_RESET));
+
+    expect($user->refresh()->firebaseIdentity?->firebase_uid)->toBe('uid-1');
 });
 
 it('keeps the providers and tokens of a verified account', function () {
@@ -287,25 +314,28 @@ it('keeps the providers and tokens of a verified account', function () {
     $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord(['providerUserInfo' => $providers]));
     $firebase->shouldNotReceive('unlinkProvider');
     $firebase->shouldNotReceive('revokeRefreshTokens');
-    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['emailVerified' => true])->andReturn(userRecord());
-    $firebase->shouldReceive('changeUserPassword')->once()->with('uid-1', 'new-secret-123')->andReturn(userRecord());
+    $firebase->shouldNotReceive('getUser');
+    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['password' => 'new-secret-123', 'emailVerified' => true])
+        ->andReturn(userRecord(['providerUserInfo' => $providers]));
 
     submitNewPassword($token)->assertHasNoFormErrors()->assertNotified(__(Password::PASSWORD_RESET));
 
     expect(resetTokenCount())->toBe(0);
 });
 
-it('shows the failure message and keeps the token when firebase fails during the reset', function () {
+it('never verifies the email when the password update fails', function () {
     $log = Log::spy();
     $user = linkedUser(verified: false);
     $token = createResetToken($user);
 
     $firebase = mockFirebase();
     $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord(['emailVerified' => false]));
-    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord(['emailVerified' => false]));
     $firebase->shouldReceive('revokeRefreshTokens')->with('uid-1');
-    $firebase->shouldReceive('updateUser')->andReturn(userRecord());
-    $firebase->shouldReceive('changeUserPassword')->andThrow(new ApiConnectionFailed('Firebase is down'));
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord(['emailVerified' => false]));
+    // The only write of the verification flag is this call, and it fails.
+    $firebase->shouldReceive('updateUser')->once()->with('uid-1', ['password' => 'p4ss-W0rd-123', 'emailVerified' => true])
+        ->andThrow(new ApiConnectionFailed('Firebase is down'));
+    $firebase->shouldNotReceive('changeUserPassword');
 
     submitNewPassword($token, 'p4ss-W0rd-123')
         ->assertNotified(__(Password::INVALID_USER))
@@ -316,7 +346,27 @@ it('shows the failure message and keeps the token when firebase fails during the
             && ! str_contains($message . json_encode($context), 'p4ss-W0rd-123')
             && ! str_contains($message . json_encode($context), 'jane@example.com'),
     );
-    expect(resetTokenCount())->toBe(1);
+    expect($user->refresh()->hasVerifiedEmail())->toBeFalse()
+        ->and(resetTokenCount())->toBe(1);
+});
+
+it('changes nothing in firebase when the record lost panel access', function () {
+    config()->set('auth.providers.firebase_users.model', UserWithoutPanelAccess::class);
+    $user = UserWithoutPanelAccess::query()->create(['name' => 'Jane', 'email' => 'jane@example.com']);
+    $token = createResetToken($user);
+
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('getUserByEmail')->andReturn(userRecord(['emailVerified' => false]));
+    $firebase->shouldNotReceive('revokeRefreshTokens');
+    $firebase->shouldNotReceive('getUser');
+    $firebase->shouldNotReceive('unlinkProvider');
+    $firebase->shouldNotReceive('updateUser');
+    $firebase->shouldNotReceive('changeUserPassword');
+
+    submitNewPassword($token)->assertNotified(__(Password::INVALID_USER))->assertNoRedirect();
+
+    expect(FirebaseIdentity::query()->count())->toBe(0)
+        ->and(resetTokenCount())->toBe(1);
 });
 
 it('changes nothing in firebase for a wrong token', function () {

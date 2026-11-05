@@ -2,6 +2,7 @@
 
 namespace Isapp\FilamentFirebaseAuth;
 
+use Illuminate\Auth\Passwords\PasswordBrokerManager;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Auth;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\CheckFirebasePassword;
@@ -14,6 +15,7 @@ use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
 use Isapp\FilamentFirebaseAuth\Contracts\DecidesAccountDeletion;
 use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Isapp\FilamentFirebaseAuth\Deletion\AccountDeletionPolicy;
+use Isapp\FilamentFirebaseAuth\Passwords\FirebasePasswordBrokerManager;
 use Spatie\LaravelPackageTools\Commands\InstallCommand;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
@@ -37,6 +39,7 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
     public function packageRegistered(): void
     {
         $this->registerActions();
+        $this->registerPasswordBroker();
     }
 
     public function packageBooted(): void
@@ -82,5 +85,15 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
     private function registerCommands(): void
     {
         $this->app->booted(fn () => $this->commands([Commands\MakeFirebaseUserCommand::class]));
+    }
+
+    /**
+     * Replaces Laravel's password broker manager with a subclass that also builds the `firebase`
+     * broker driver. Laravel's manager has no `extend()` hook. `auth.password.broker` and the
+     * `Password` facade resolve through `auth.password`, so they use the subclass too.
+     */
+    private function registerPasswordBroker(): void
+    {
+        $this->app->extend('auth.password', fn (PasswordBrokerManager $manager, Application $app): FirebasePasswordBrokerManager => new FirebasePasswordBrokerManager($app));
     }
 }

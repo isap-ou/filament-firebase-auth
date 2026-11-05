@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\Admin;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
+use Kreait\Firebase\Exception\Auth\ApiConnectionFailed;
+use Kreait\Firebase\Exception\Auth\UserNotFound;
 
 it('reads verification from the link without calling firebase', function () {
     $firebase = mockFirebase();
@@ -128,6 +130,28 @@ it('reports no password provider for a social-only firebase user', function () {
             ['providerId' => 'google.com', 'rawId' => 'g-1', 'email' => 'jane@example.com'],
         ],
     ]));
+
+    expect(linkedUser()->hasFirebasePasswordProvider())->toBeFalse();
+});
+
+it('asks firebase again for the password provider after an error', function () {
+    $calls = 0;
+    mockFirebase()->shouldReceive('getUser')->twice()->with('uid-1')->andReturnUsing(function () use (&$calls) {
+        if ($calls++ === 0) {
+            throw new ApiConnectionFailed('Firebase is down');
+        }
+
+        return userRecord();
+    });
+
+    $user = linkedUser();
+
+    expect(fn () => $user->hasFirebasePasswordProvider())->toThrow(ApiConnectionFailed::class)
+        ->and($user->hasFirebasePasswordProvider())->toBeTrue();
+});
+
+it('reports no password provider for a deleted firebase user', function () {
+    mockFirebase()->shouldReceive('getUser')->once()->andThrow(new UserNotFound('No user'));
 
     expect(linkedUser()->hasFirebasePasswordProvider())->toBeFalse();
 });

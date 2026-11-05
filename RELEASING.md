@@ -54,6 +54,7 @@ Do these steps on the commit that you will tag:
    A pre-release does not change `CHANGELOG.md`.
    - If `CHANGELOG.md` already has a heading that starts with the release title, the workflow makes no change.
    - If the heading is missing, the workflow adds the release notes under a new heading and commits `CHANGELOG.md` to `main`.
+     This push fails when `main` requires status checks. Read "Workflows that push to `main`" below.
 5. Packagist gets the new tag through the GitHub webhook. Check that the version shows on
    https://packagist.org/packages/isapp/filament-firebase-auth.
 6. Update the plugin page in the Filament author dashboard (https://filamentphp.com/author).
@@ -76,6 +77,19 @@ The files in this repository cannot set these options. Set them by hand in the r
   Add the `emulator` job when the emulator tests are in place.
   Required checks block a direct push of a commit that has no green checks.
   Merge through a pull request, or let the maintainers bypass the rule.
+- **Workflows that push to `main`.** `update-changelog` and `fix-code-style` push commits to `main` with `GITHUB_TOKEN`.
+  A commit that `GITHUB_TOKEN` pushes does not start other workflows, so it never gets green checks.
+  When `main` requires status checks, GitHub refuses these pushes, and the workflow fails.
+  The bypass list of a ruleset accepts roles, teams, GitHub Apps and Dependabot.
+  It does not offer `GITHUB_TOKEN`, so you cannot let these two workflows bypass the rule.
+  Make sure that neither workflow needs to push:
+  - Before you tag, move the `Unreleased` notes under the version heading (pre-release checklist).
+    Then `update-changelog` finds the heading and makes no change.
+  - Run `composer lint` before you push to `main`. Then `fix-code-style` finds nothing to fix on `main`.
+  - If one of these workflows fails on `main`, make the same change by hand and merge it through a pull request.
+
+  If you want these workflows to push, change them to use a token of your own GitHub App.
+  Then add that app to the bypass list of the ruleset.
 - **Signed tags.** Sign each release tag with `git tag -s`.
   Add a tag ruleset for `v*` that blocks the update and the deletion of release tags.
 - **Discussions.** Turn on Discussions with the categories "Q&A" and "Ideas".

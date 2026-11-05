@@ -26,7 +26,7 @@ class FindOrCreateFirebaseUser
     {
         $user = $this->findFirebaseUserByEmail->handle($email);
 
-        if ($user !== null) {
+        if ($user instanceof UserRecord) {
             return [$user, false];
         }
 

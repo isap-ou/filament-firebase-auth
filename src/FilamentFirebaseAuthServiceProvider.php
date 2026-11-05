@@ -3,6 +3,7 @@
 namespace Isapp\FilamentFirebaseAuth;
 
 use Filament\Auth\Http\Requests\EmailChangeVerificationRequest as FilamentEmailChangeVerificationRequest;
+use Filament\Facades\Filament;
 use Filament\FilamentManager;
 use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
@@ -18,6 +19,7 @@ use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\FindFirebaseUserByEmail;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\CreateLocalUser;
 use Isapp\FilamentFirebaseAuth\Actions\LocalUsers\SyncLocalUser;
+use Isapp\FilamentFirebaseAuth\Actions\Panels\EnsurePanelUsesFirebasePages;
 use Isapp\FilamentFirebaseAuth\Auth\FirebaseUserProvider;
 use Isapp\FilamentFirebaseAuth\Contracts\CreatesLocalUsers;
 use Isapp\FilamentFirebaseAuth\Contracts\DecidesAccountDeletion;
@@ -59,6 +61,22 @@ class FilamentFirebaseAuthServiceProvider extends PackageServiceProvider
         $this->registerUserProvider();
         $this->registerCommands();
         $this->registerSocialSignIn();
+        $this->registerPanelCheck();
+    }
+
+    /**
+     * Checks every panel that Filament serves, also a Firebase panel without the plugin.
+     * The plugin's `boot()` checks only the panels that list the plugin.
+     */
+    private function registerPanelCheck(): void
+    {
+        Filament::serving(function (): void {
+            $panel = Filament::getCurrentPanel();
+
+            if ($panel !== null) {
+                $this->app->make(EnsurePanelUsesFirebasePages::class)->handle($panel);
+            }
+        });
     }
 
     /**

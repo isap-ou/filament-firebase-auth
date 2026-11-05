@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Facades\Log;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\CheckFirebasePassword;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\CreateFirebaseUser;
 use Isapp\FilamentFirebaseAuth\Actions\Firebase\DeleteFirebaseUser;
@@ -60,6 +61,18 @@ it('returns null for a wrong password', function () {
     $firebase->shouldNotReceive('getUser');
 
     expect(app(CheckFirebasePassword::class)->handle('jane@example.com', 'wrong'))->toBeNull();
+});
+
+it('refuses a sign-in that waits for a firebase second factor', function () {
+    // Without an ID token, Firebase has not finished the sign-in. The password alone proves nothing.
+    $log = Log::spy();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('signInWithEmailAndPassword')->once()->andReturn(mfaPendingSignInResult('uid-1'));
+    $firebase->shouldNotReceive('getUser');
+
+    expect(app(CheckFirebasePassword::class)->handle('jane@example.com', 'secret'))->toBeNull();
+
+    $log->shouldHaveReceived('warning')->once()->with('Firebase refused the password check.', ['code' => 'MFA_REQUIRED']);
 });
 
 it('rethrows a transport failure', function () {

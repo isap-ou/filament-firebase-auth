@@ -73,6 +73,8 @@ class ScheduleFirebaseSessionCheck
 
     /**
      * Without a queue, the job runs in this process after the response is sent.
+     * With a queue, the job goes to the default queue connection. On a `sync` connection the job
+     * then runs at once, before the response, and the request waits for Firebase.
      */
     protected function dispatch(SyncFirebaseIdentity $job): void
     {

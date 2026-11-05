@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Schema;
 use Isapp\FilamentFirebaseAuth\Models\FirebaseIdentity;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\Admin;
 use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
@@ -75,4 +76,10 @@ it('resolves the linked record through the morph relation', function () {
 
     expect($linked)->toBeInstanceOf(User::class)
         ->and($linked?->getKey())->toBe($user->getKey());
+});
+
+it('indexes the firebase uid for the lookup across all models', function () {
+    $indexes = collect(Schema::getIndexes(config()->string('filament-firebase-auth.table')));
+
+    expect($indexes->contains(fn (array $index): bool => $index['columns'] === ['firebase_uid']))->toBeTrue();
 });

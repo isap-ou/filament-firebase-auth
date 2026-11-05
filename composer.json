@@ -30,10 +30,13 @@
     ],
     "require": {
         "php": "^8.3",
-        "filament/filament": "^5.0",
-        "illuminate/contracts": "^12.4|^13.0",
-        "illuminate/database": "^12.4|^13.0",
+        "filament/filament": "^5.8.3",
+        "illuminate/auth": "^12.69.3|^13.33",
+        "illuminate/contracts": "^12.69.3|^13.33",
+        "illuminate/database": "^12.69.3|^13.33",
         "kreait/laravel-firebase": "^7.2",
+        "lcobucci/jwt": "^5.3",
+        "psr/log": "^3.0",
         "spatie/laravel-package-tools": "^1.15"
     },
     "require-dev": {
@@ -45,6 +48,9 @@
         "pestphp/pest-plugin-laravel": "^4.0|^5.0",
         "pestphp/pest-plugin-livewire": "^4.0|^5.0",
         "rector/rector": "^2.0"
+    },
+    "conflict": {
+        "league/uri-components": "<7.3"
     },
     "autoload": {
         "psr-4": {
@@ -62,6 +68,7 @@
         "lint": "pint",
         "refactor": "rector",
         "test": "pest",
+        "test:emulator": "npx --no-install firebase-tools emulators:exec --project demo-filament-firebase-auth --only auth \"vendor/bin/pest --group=emulator\"",
         "test:lint": "pint --test",
         "test:refactor": "rector --dry-run"
     },

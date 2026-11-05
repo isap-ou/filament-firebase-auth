@@ -20,6 +20,7 @@ use Illuminate\Support\Carbon;
  * @property Carbon|null $tokens_valid_after
  * @property Carbon|null $invalidated_at
  * @property string|null $session_salt
+ * @property bool|null $has_password_provider
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  */
@@ -32,6 +33,7 @@ class FirebaseIdentity extends Model
         'tokens_valid_after',
         'invalidated_at',
         'session_salt',
+        'has_password_provider',
     ];
 
     public function getTable(): string
@@ -67,6 +69,7 @@ class FirebaseIdentity extends Model
             'synced_at' => 'datetime',
             'tokens_valid_after' => 'datetime',
             'invalidated_at' => 'datetime',
+            'has_password_provider' => 'boolean',
         ];
     }
 }

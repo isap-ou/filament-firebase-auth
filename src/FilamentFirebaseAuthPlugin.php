@@ -67,8 +67,9 @@ class FilamentFirebaseAuthPlugin implements Plugin
     }
 
     /**
-     * Filament calls this method on the first request of the panel.
-     * A Firebase panel with Filament's own registration or profile page then fails at once.
+     * Filament calls this method when it boots the panel on a panel request.
+     * A misconfigured Firebase panel then fails at once. The service provider runs the same check
+     * on Filament's `ServingFilament` event, so a Firebase panel without the plugin fails too.
      */
     public function boot(Panel $panel): void
     {

@@ -2,13 +2,19 @@
 
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Panel;
+use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 use Illuminate\Session\Middleware\AuthenticateSession as LaravelAuthenticateSession;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
+use Isapp\FilamentFirebaseAuth\Contracts\SyncsLocalUsers;
 use Isapp\FilamentFirebaseAuth\FilamentFirebaseAuthPlugin;
 use Isapp\FilamentFirebaseAuth\Http\Middleware\ScheduleFirebaseSessionCheck;
 use Isapp\FilamentFirebaseAuth\Jobs\SyncFirebaseIdentity;
+use Isapp\FilamentFirebaseAuth\Tests\Fixtures\Models\User;
+use Kreait\Firebase\Auth\UserRecord;
 use Kreait\Firebase\Exception\Auth\ApiConnectionFailed;
 use Kreait\Firebase\Exception\Auth\UserNotFound;
 use Livewire\Mechanisms\HandleRequests\HandleRequests;
@@ -118,6 +124,81 @@ it('stores revoked tokens time', function () {
         ->and($user->getAuthPassword())->not->toBe($fingerprint);
 });
 
+it('stores revoked tokens time when the record cannot be saved', function () {
+    // Another app gave the Firebase account an email that another local record holds.
+    $log = Log::spy();
+    User::query()->create(['name' => 'John', 'email' => 'taken@example.com']);
+    $user = linkedUser();
+    $user->firebaseIdentity?->update(['tokens_valid_after' => now()->subHour()]);
+    $fingerprint = $user->refresh()->getAuthPassword();
+    $revokedAt = now()->addMinute()->startOfSecond();
+    mockFirebase()->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord([
+        'email' => 'taken@example.com',
+        'validSince' => (string) $revokedAt->getTimestamp(),
+    ]));
+
+    sessionCheckRunJob($user);
+
+    $user->refresh();
+    expect($user->firebaseIdentity?->tokens_valid_after?->getTimestamp())->toBe($revokedAt->getTimestamp())
+        ->and($user->getAttribute('email'))->toBe('jane@example.com')
+        ->and($user->getAuthPassword())->not->toBe($fingerprint);
+    $log->shouldHaveReceived('warning')->once()->withArgs(
+        fn (string $message, array $context): bool => $message === 'The session check could not save the local record. The link is up to date.'
+            && $context['uid'] === 'uid-1'
+            && is_a($context['exception'], QueryException::class, true),
+    );
+});
+
+it('does not raise the verified flag when the record keeps another email', function () {
+    // The save fails, so the local record keeps the old email. A verified Firebase email does not prove it.
+    User::query()->create(['name' => 'John', 'email' => 'taken@example.com']);
+    $user = linkedUser(verified: false);
+    $revokedAt = now()->addMinute()->startOfSecond();
+    mockFirebase()->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord([
+        'email' => 'taken@example.com',
+        'emailVerified' => true,
+        'validSince' => (string) $revokedAt->getTimestamp(),
+    ]));
+
+    sessionCheckRunJob($user);
+
+    $user->refresh();
+    expect($user->firebaseIdentity?->tokens_valid_after?->getTimestamp())->toBe($revokedAt->getTimestamp())
+        ->and($user->firebaseIdentity?->email_verified_at)->toBeNull()
+        ->and($user->getAttribute('email'))->toBe('jane@example.com');
+});
+
+it('raises the verified flag after the record takes the new firebase email', function () {
+    $user = linkedUser(verified: false);
+    mockFirebase()->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord([
+        'email' => 'jane.doe@example.com',
+        'emailVerified' => true,
+    ]));
+
+    sessionCheckRunJob($user);
+
+    $user->refresh();
+    expect($user->getAttribute('email'))->toBe('jane.doe@example.com')
+        ->and($user->firebaseIdentity?->email_verified_at)->not->toBeNull();
+});
+
+it('stores revoked tokens time when a host sync class does not refresh the link', function () {
+    app()->bind(SyncsLocalUsers::class, fn () => new class implements SyncsLocalUsers
+    {
+        public function handle(Model & Authenticatable $user, UserRecord $firebaseUser): void {}
+    });
+    $user = linkedUser();
+    $revokedAt = now()->addMinute()->startOfSecond();
+    mockFirebase()->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord([
+        'validSince' => (string) $revokedAt->getTimestamp(),
+    ]));
+
+    sessionCheckRunJob($user);
+
+    expect($user->refresh()->firebaseIdentity?->tokens_valid_after?->getTimestamp())->toBe($revokedAt->getTimestamp());
+});
+
 it('clears the mark when the firebase account is enabled again', function () {
     $user = linkedUser();
     $user->firebaseIdentity?->update(['invalidated_at' => now()->subDay()]);
@@ -130,7 +211,9 @@ it('clears the mark when the firebase account is enabled again', function () {
 
 it('logs the user out on the next request after a change', function () {
     // No fake: the middleware dispatches the job, and the job runs after the response.
-    mockFirebase()->shouldReceive('getUser')->once()->with('uid-1')->andReturn(userRecord(['disabled' => true]));
+    // The test app keeps the terminating callbacks of earlier requests. The job of the first request
+    // therefore runs again after the second request, and it reads Firebase again each time.
+    mockFirebase()->shouldReceive('getUser')->twice()->with('uid-1')->andReturn(userRecord(['disabled' => true]));
     $user = linkedUser();
     sessionCheckGuard()->login($user);
 

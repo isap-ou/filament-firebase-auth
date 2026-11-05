@@ -9,6 +9,7 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cookie;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Isapp\FilamentFirebaseAuth\Actions\Accounts\RenewCurrentSession;
 use Isapp\FilamentFirebaseAuth\Contracts\DecidesAccountDeletion;
@@ -469,15 +470,13 @@ it('refuses the email change after the block link', function () {
     expect($user->refresh()->getAttribute('email'))->toBe('jane@example.com');
 });
 
-it('keeps the verification link usable when firebase refuses the email', function () {
+it('uses up the verification link when firebase refuses the email', function () {
     $user = linkedUser(verified: false);
     $firebase = profileFirebase();
+    // Only the first click reaches Firebase. The second click finds no signature.
     $firebase->shouldReceive('updateUser')->once()
         ->with('uid-1', ['email' => 'new@example.com', 'emailVerified' => true])
         ->andThrow(new ApiConnectionFailed('Firebase is down'));
-    $firebase->shouldReceive('updateUser')->once()
-        ->with('uid-1', ['email' => 'new@example.com', 'emailVerified' => true])
-        ->andReturn(userRecord(['email' => 'new@example.com']));
 
     $url = profileRequestEmailChange($user, 'new@example.com');
 
@@ -485,11 +484,32 @@ it('keeps the verification link usable when firebase refuses the email', functio
 
     expect($user->refresh()->getAttribute('email'))->toBe('jane@example.com');
 
-    // The same link works once Firebase answers again.
-    actingAs($user, 'app')->get($url)->assertRedirect();
+    // The owner of the old email may have blocked the change meanwhile, so the link never comes back.
+    actingAs($user, 'app')->get($url)->assertForbidden();
 
-    expect($user->refresh()->getAttribute('email'))->toBe('new@example.com')
-        ->and($user->firebaseIdentity?->email_verified_at)->not->toBeNull();
+    expect($user->refresh()->getAttribute('email'))->toBe('jane@example.com')
+        ->and($user->firebaseIdentity?->email_verified_at)->toBeNull();
+});
+
+it('logs a failed read after the revocation on log out everywhere', function () {
+    config()->set('filament-firebase-auth.global_logout', true);
+    $user = linkedUser();
+    $firebase = mockFirebase();
+    $firebase->shouldReceive('signInWithEmailAndPassword')->with('jane@example.com', 'secret')
+        ->andReturn(signInResult('uid-1'));
+    $firebase->shouldReceive('revokeRefreshTokens')->once()->with('uid-1');
+    $firebase->shouldReceive('getUser')->with('uid-1')->andReturn(userRecord())->once();
+    $firebase->shouldReceive('getUser')->with('uid-1')->andThrow(new ApiConnectionFailed('Firebase is down'));
+    $log = Log::spy();
+
+    profilePage($user)
+        ->callAction('logoutEverywhere', data: ['currentPassword' => 'secret'])
+        ->assertNotified(__('filament-firebase-auth::profile.messages.firebase_failed'));
+
+    $log->shouldHaveReceived('warning')->with('Firebase could not read the user after the revocation.', Mockery::any())->once();
+    $log->shouldNotHaveReceived('warning', ['Firebase could not revoke the tokens.', Mockery::any()]);
+
+    expect(auth('app')->id())->toBe($user->getKey());
 });
 
 it('uses filament for a record without a link', function () {

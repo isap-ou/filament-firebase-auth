@@ -392,11 +392,23 @@ class EditProfile extends FilamentEditProfile
 
                 try {
                     app(RevokeFirebaseTokens::class)->handle($identity->firebase_uid);
+                } catch (FirebaseException $exception) {
+                    logger()->warning('Firebase could not revoke the tokens.', [
+                        'uid' => $identity->firebase_uid,
+                        'exception' => $exception::class,
+                    ]);
 
+                    $this->sendFirebaseNotification('filament-firebase-auth::profile.messages.firebase_failed', success: false);
+
+                    return;
+                }
+
+                try {
                     // `FindFirebaseUser` can hold the record from before the revocation.
                     $firebaseUser = app(FetchFirebaseUser::class)->handle($identity->firebase_uid);
                 } catch (FirebaseException $exception) {
-                    logger()->warning('Firebase could not revoke the tokens.', [
+                    // The tokens are revoked. The session check of a later request stores the new time.
+                    logger()->warning('Firebase could not read the user after the revocation.', [
                         'uid' => $identity->firebase_uid,
                         'exception' => $exception::class,
                     ]);

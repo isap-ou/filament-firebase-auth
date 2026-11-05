@@ -29,7 +29,9 @@ class EmailChangeVerificationRequest extends FilamentEmailChangeVerificationRequ
      * 2. Use up the one-time signature, as Filament does. After that, the block link of the old
      *    email cannot race with the Firebase change, and a second click finds no signature.
      * 3. Send the new email and the verified flag to Firebase in one call. When Firebase refuses,
-     *    the signature goes back to the cache, nothing changes, and the method returns false.
+     *    nothing changes and the method returns false. The link stays used up, so the person
+     *    asks for the email change again. The signature never goes back to the cache: the owner of
+     *    the old email may have used the block link in the meantime.
      * 4. Save the email on the record and sync the link. The sync sets `email_verified_at`
      *    from the Firebase answer, so no second Firebase call is needed.
      */
@@ -59,9 +61,7 @@ class EmailChangeVerificationRequest extends FilamentEmailChangeVerificationRequ
             return false;
         }
 
-        $consumedKeys = $this->consumeSignature();
-
-        if ($consumedKeys === null) {
+        if (! $this->consumeSignature()) {
             return false;
         }
 
@@ -72,8 +72,6 @@ class EmailChangeVerificationRequest extends FilamentEmailChangeVerificationRequ
                 'uid' => $identity->firebase_uid,
                 'exception' => $exception::class,
             ]);
-
-            $this->restoreSignature($consumedKeys);
 
             return false;
         }
@@ -91,18 +89,16 @@ class EmailChangeVerificationRequest extends FilamentEmailChangeVerificationRequ
     }
 
     /**
-     * Removes the signature from the cache with the same keys as Filament's `fulfill()`.
+     * Removes the signature from the cache with the same keys and checks as Filament's `fulfill()`.
      *
-     * @return list<string>|null The removed keys, or null when the signature was not pending
-     *                           or could not be removed.
+     * Returns false when the signature was not pending or could not be removed.
      */
-    protected function consumeSignature(): ?array
+    protected function consumeSignature(): bool
     {
         $signature = $this->query('signature');
         $cache = cache();
         $wasPending = false;
         $wasRemoved = true;
-        $consumedKeys = [];
 
         foreach (["filament:auth:email_change:verification:{$signature}", $signature] as $cacheKey) {
             if (! is_string($cacheKey) || ! $cache->has($cacheKey)) {
@@ -113,32 +109,9 @@ class EmailChangeVerificationRequest extends FilamentEmailChangeVerificationRequ
 
             if ((! $cache->forget($cacheKey)) && ($cache->get($cacheKey) !== null)) {
                 $wasRemoved = false;
-
-                continue;
             }
-
-            $consumedKeys[] = $cacheKey;
         }
 
-        if (! $wasPending || ! $wasRemoved) {
-            $this->restoreSignature($consumedKeys);
-
-            return null;
-        }
-
-        return $consumedKeys;
-    }
-
-    /**
-     * Puts the signature back, with the lifetime that Filament gives it (`EditProfile::sendEmailChangeVerification()`).
-     * The signed URL has its own expiry, so the link never lives longer than Filament allows.
-     *
-     * @param  list<string>  $cacheKeys
-     */
-    protected function restoreSignature(array $cacheKeys): void
-    {
-        foreach ($cacheKeys as $cacheKey) {
-            cache()->put($cacheKey, true, ttl: now()->addHour());
-        }
+        return $wasPending && $wasRemoved;
     }
 }
